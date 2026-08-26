@@ -5,7 +5,7 @@
 use gpui::*;
 
 use crate::model::{Entry, Route, SettingsPage, Task};
-use crate::state::{child_status_counts, format_tokens, plan_progress, AppState};
+use crate::state::{child_status_counts, format_tokens, plan_progress, AppMenu, AppState};
 use crate::theme;
 
 pub fn root(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
@@ -16,12 +16,18 @@ pub fn root(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
         .flex_col()
         .bg(theme::BG_BASE)
         .text_color(theme::TEXT)
+        .relative()
         .on_key_down(
             window.listener_for(&cx.entity(), |this, event, window, cx| {
                 this.handle_global_key(event, window, cx);
             }),
         )
-        .child(menu_bar())
+        .child(menu_bar(state, window, cx))
+        .children(
+            state
+                .app_menu
+                .map(|menu| app_menu_popup(menu, state, window, cx)),
+        )
         .child(
             div()
                 .id("app-body")
@@ -50,7 +56,7 @@ pub fn root(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
         }))
 }
 
-fn menu_bar() -> Stateful<Div> {
+fn menu_bar(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
     div()
         .id("menu-bar")
         .h(px(28.0))
@@ -64,15 +70,190 @@ fn menu_bar() -> Stateful<Div> {
         .border_color(theme::BORDER)
         .text_size(rems(0.74))
         .text_color(theme::TEXT_MUTED)
-        .children(["File", "Edit", "View", "Help"].into_iter().map(|label| {
+        .children([
+            top_menu_button(
+                "menu-file",
+                "File",
+                state.app_menu == Some(AppMenu::File),
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.toggle_app_menu(AppMenu::File, cx);
+                }),
+            ),
+            top_menu_button(
+                "menu-edit",
+                "Edit",
+                state.app_menu == Some(AppMenu::Edit),
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.toggle_app_menu(AppMenu::Edit, cx);
+                }),
+            ),
+            top_menu_button(
+                "menu-view",
+                "View",
+                state.app_menu == Some(AppMenu::View),
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.toggle_app_menu(AppMenu::View, cx);
+                }),
+            ),
+            top_menu_button(
+                "menu-help",
+                "Help",
+                state.app_menu == Some(AppMenu::Help),
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.toggle_app_menu(AppMenu::Help, cx);
+                }),
+            ),
+        ])
+}
+
+fn top_menu_button(
+    id: &'static str,
+    label: &'static str,
+    active: bool,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .px_1()
+        .py_1()
+        .rounded_sm()
+        .cursor_pointer()
+        .bg(if active {
+            Hsla::from(theme::BG_SELECTED)
+        } else {
+            gpui::transparent_black()
+        })
+        .hover(|style| style.bg(theme::BG_HOVER).text_color(theme::TEXT))
+        .child(label)
+        .on_click(listener)
+}
+
+fn app_menu_popup(
+    menu: AppMenu,
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
+    let left = match menu {
+        AppMenu::File => 8.0,
+        AppMenu::Edit => 48.0,
+        AppMenu::View => 88.0,
+        AppMenu::Help => 132.0,
+    };
+    let title = match menu {
+        AppMenu::File => "File",
+        AppMenu::Edit => "Edit",
+        AppMenu::View => "View",
+        AppMenu::Help => "Help",
+    };
+    let actions = match menu {
+        AppMenu::File => vec![
+            menu_action(
+                "app-file-new",
+                "New chat",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.create_live_task(cx);
+                }),
+            ),
+            menu_action(
+                "app-file-settings",
+                "Settings",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.open_settings(SettingsPage::General, cx);
+                }),
+            ),
+            menu_action(
+                "app-file-close",
+                "Close menu",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.close_app_menu(cx);
+                }),
+            ),
+        ],
+        AppMenu::Edit => vec![
+            menu_action(
+                "app-edit-search",
+                "Search tasks",
+                window.listener_for(&cx.entity(), |this, _event, window, cx| {
+                    this.toggle_search(window, cx);
+                }),
+            ),
+            menu_action(
+                "app-edit-rename",
+                "Rename task",
+                window.listener_for(&cx.entity(), |this, _event, window, cx| {
+                    this.begin_rename(window, cx);
+                }),
+            ),
+            menu_action(
+                "app-edit-clear",
+                "Clear composer",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.clear_draft(cx);
+                }),
+            ),
+        ],
+        AppMenu::View => vec![
+            menu_action(
+                "app-view-sidebar",
+                if state.sidebar_collapsed {
+                    "Expand sidebar"
+                } else {
+                    "Collapse sidebar"
+                },
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.toggle_sidebar(cx);
+                }),
+            ),
+            menu_action(
+                "app-view-options",
+                "View options",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.toggle_view_options(cx);
+                }),
+            ),
+        ],
+        AppMenu::Help => vec![
+            menu_action(
+                "app-help-shortcuts",
+                "Keyboard shortcuts",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.open_settings(SettingsPage::Keybindings, cx);
+                }),
+            ),
+            menu_action(
+                "app-help-about",
+                "About Codex App GPUI",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.notify_success("Codex App GPUI · native GPUI client", cx);
+                }),
+            ),
+        ],
+    };
+    div()
+        .id("app-menu-popup")
+        .absolute()
+        .top(px(28.0))
+        .left(px(left))
+        .w(px(190.0))
+        .flex()
+        .flex_col()
+        .gap_1()
+        .p_1()
+        .bg(theme::BG_SURFACE_2)
+        .border_1()
+        .border_color(theme::BORDER)
+        .rounded_lg()
+        .shadow_lg()
+        .child(
             div()
-                .id(ElementId::Name(format!("menu-{label}").into()))
-                .px_1()
+                .px_2()
                 .py_1()
-                .cursor_pointer()
-                .hover(|style| style.bg(theme::BG_HOVER).text_color(theme::TEXT))
-                .child(label)
-        }))
+                .text_size(rems(0.68))
+                .text_color(theme::TEXT_FAINT)
+                .child(title),
+        )
+        .children(actions)
 }
 
 fn sidebar(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {

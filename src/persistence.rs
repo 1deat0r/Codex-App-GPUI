@@ -19,6 +19,8 @@ pub struct Snapshot {
     pub selected_project: String,
     #[serde(default)]
     pub selected_task: String,
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
 }
 
 impl Snapshot {
@@ -40,6 +42,7 @@ impl Snapshot {
             settings: Settings::default(),
             selected_project: project,
             selected_task: task,
+            sidebar_collapsed: false,
         }
     }
 }

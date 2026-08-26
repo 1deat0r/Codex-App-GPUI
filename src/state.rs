@@ -35,11 +35,20 @@ impl ConnectionState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMenu {
+    File,
+    Edit,
+    View,
+    Help,
+}
+
 pub struct AppState {
     pub workspace: Workspace,
     pub settings: Settings,
     pub selected_project: String,
     pub selected_task: String,
+    pub app_menu: Option<AppMenu>,
     pub route: Route,
     pub settings_page: SettingsPage,
     pub query: String,
@@ -74,6 +83,7 @@ impl AppState {
             settings: snapshot.settings,
             selected_project: snapshot.selected_project,
             selected_task: snapshot.selected_task,
+            app_menu: None,
             route: Route::Task,
             settings_page: SettingsPage::General,
             query: String::new(),
@@ -110,6 +120,7 @@ impl AppState {
             settings: self.settings.clone(),
             selected_project: self.selected_project.clone(),
             selected_task: self.selected_task.clone(),
+            sidebar_collapsed: self.sidebar_collapsed,
         }
     }
 
@@ -568,6 +579,7 @@ impl AppState {
         self.caret = 0;
         self.attachments.clear();
         self.menu_open = false;
+        self.app_menu = None;
         self.view_open = false;
         self.rename_open = false;
         self.rename_draft.clear();
@@ -652,6 +664,7 @@ impl AppState {
     pub fn set_route(&mut self, route: Route, cx: &mut Context<Self>) {
         self.route = route;
         self.menu_open = false;
+        self.app_menu = None;
         self.view_open = false;
         self.rename_open = false;
         cx.notify();
@@ -661,6 +674,7 @@ impl AppState {
         self.settings_page = page;
         self.route = Route::Settings;
         self.menu_open = false;
+        self.app_menu = None;
         self.view_open = false;
         cx.notify();
     }
@@ -979,6 +993,7 @@ impl AppState {
 
     pub fn toggle_menu(&mut self, cx: &mut Context<Self>) {
         self.menu_open = !self.menu_open;
+        self.app_menu = None;
         self.view_open = false;
         cx.notify();
     }
@@ -986,7 +1001,27 @@ impl AppState {
     pub fn toggle_view_options(&mut self, cx: &mut Context<Self>) {
         self.view_open = !self.view_open;
         self.menu_open = false;
+        self.app_menu = None;
         cx.notify();
+    }
+
+    pub fn toggle_app_menu(&mut self, menu: AppMenu, cx: &mut Context<Self>) {
+        self.app_menu = (self.app_menu != Some(menu)).then_some(menu);
+        self.menu_open = false;
+        self.view_open = false;
+        cx.notify();
+    }
+
+    pub fn close_app_menu(&mut self, cx: &mut Context<Self>) {
+        self.app_menu = None;
+        cx.notify();
+    }
+
+    pub fn clear_draft(&mut self, cx: &mut Context<Self>) {
+        self.draft.clear();
+        self.caret = 0;
+        self.attachments.clear();
+        self.notify_success("Composer cleared", cx);
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -1195,6 +1230,9 @@ impl AppState {
                 cx.notify();
             } else if self.view_open {
                 self.view_open = false;
+                cx.notify();
+            } else if self.app_menu.is_some() {
+                self.app_menu = None;
                 cx.notify();
             } else if self.search_open {
                 self.search_open = false;
