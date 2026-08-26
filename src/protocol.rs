@@ -6,9 +6,16 @@
 //! client: initialize, initialized, thread operations, turn operations, and
 //! safe handling of server-initiated approvals.
 
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
-use std::sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc::{self, SyncSender},
+    Arc, Condvar, Mutex,
+};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -20,6 +27,7 @@ const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RpcRequest {
+    #[serde(default, skip_serializing)]
     pub jsonrpc: String,
     pub id: u64,
     pub method: String,
@@ -28,6 +36,7 @@ pub struct RpcRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RpcNotification {
+    #[serde(default, skip_serializing)]
     pub jsonrpc: String,
     pub method: String,
     pub params: Value,
@@ -57,11 +66,7 @@ impl ServerThread {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let status = value
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("notLoaded")
-            .to_string();
+        let status = value.get("status").map(status_text).unwrap_or_else(|| "notLoaded".into());
         let model = value
             .get("model")
             .and_then(Value::as_str)
@@ -70,20 +75,47 @@ impl ServerThread {
         let updated_at = value
             .get("updatedAt")
             .or_else(|| value.get("updated_at"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+            .map(value_text)
+            .unwrap_or_default();
         Some(Self { id, title, cwd, status, model, updated_at })
     }
 }
 
-struct Transport {
-    reader: Box<dyn BufRead + Send>,
-    writer: Box<dyn Write + Send>,
+fn status_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.get("type").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_else(|| value_text(value))
+}
+
+fn value_text(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(value) => value.clone(),
+        Value::Number(value) => value.to_string(),
+        Value::Bool(value) => value.to_string(),
+        _ => value.to_string(),
+    }
+}
+
+type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
+
+struct ResponseState {
+    pending: HashMap<u64, SyncSender<Result<Value>>>,
+    backlog: HashMap<u64, Result<Value>>,
+}
+
+struct EventInbox {
+    queue: VecDeque<Value>,
+    closed: bool,
+    close_reason: Option<String>,
 }
 
 pub struct AppServerClient {
-    transport: Arc<Mutex<Transport>>,
+    writer: Writer,
+    responses: Arc<Mutex<ResponseState>>,
+    inbox: Arc<(Mutex<EventInbox>, Condvar)>,
     next_id: AtomicU64,
     child: Option<Arc<Mutex<Child>>>,
 }
@@ -97,14 +129,7 @@ impl AppServerClient {
         let mut child = command.spawn().with_context(|| format!("spawn app-server `{command_line}`"))?;
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("app-server stdin unavailable"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("app-server stdout unavailable"))?;
-        Ok(Self {
-            transport: Arc::new(Mutex::new(Transport {
-                reader: Box::new(BufReader::new(stdout)),
-                writer: Box::new(stdin),
-            })),
-            next_id: AtomicU64::new(1),
-            child: Some(Arc::new(Mutex::new(child))),
-        })
+        Ok(Self::from_transport(BufReader::new(stdout), stdin, Some(Arc::new(Mutex::new(child)))))
     }
 
     pub fn from_parts<R, W>(reader: R, writer: W) -> Self
@@ -112,18 +137,41 @@ impl AppServerClient {
         R: BufRead + Send + 'static,
         W: Write + Send + 'static,
     {
+        Self::from_transport(reader, writer, None)
+    }
+
+    fn from_transport<R, W>(reader: R, writer: W, child: Option<Arc<Mutex<Child>>>) -> Self
+    where
+        R: BufRead + Send + 'static,
+        W: Write + Send + 'static,
+    {
+        let writer: Writer = Arc::new(Mutex::new(Box::new(writer)));
+        let responses = Arc::new(Mutex::new(ResponseState { pending: HashMap::new(), backlog: HashMap::new() }));
+        let inbox = Arc::new((
+            Mutex::new(EventInbox {
+                queue: VecDeque::new(),
+                closed: false,
+                close_reason: None,
+            }),
+            Condvar::new(),
+        ));
+        let reader_responses = responses.clone();
+        let reader_inbox = inbox.clone();
+        thread::Builder::new()
+            .name("codex-app-gpui-app-server-reader".into())
+            .spawn(move || read_messages(reader, reader_responses, reader_inbox))
+            .expect("spawn app-server reader");
         Self {
-            transport: Arc::new(Mutex::new(Transport {
-                reader: Box::new(reader),
-                writer: Box::new(writer),
-            })),
+            writer,
+            responses,
+            inbox,
             next_id: AtomicU64::new(1),
-            child: None,
+            child,
         }
     }
 
     pub fn is_live(&self) -> bool {
-        self.child.is_some()
+        self.child.as_ref().and_then(|child| child.lock().ok()).map(|mut child| child.try_wait().ok().flatten().is_none()).unwrap_or(false)
     }
 
     pub fn request(&self, method: &str, params: Value) -> Result<Value> {
@@ -134,33 +182,30 @@ impl AppServerClient {
             method: method.into(),
             params,
         };
-        let mut transport = self.transport.lock().map_err(|_| anyhow!("app-server transport poisoned"))?;
-        write_json_line(&mut transport.writer, &request)?;
-
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let bytes = transport.reader.read_line(&mut line).context("read app-server response")?;
-            if bytes == 0 {
-                return Err(anyhow!("app-server closed the JSONL stream"));
-            }
-            let message: Value = serde_json::from_str(line.trim()).context("decode app-server JSONL message")?;
-            if message.get("id").and_then(Value::as_u64) == Some(id) {
-                if let Some(error) = message.get("error") {
-                    return Err(anyhow!("app-server `{method}` failed: {error}"));
-                }
-                return Ok(message.get("result").cloned().unwrap_or(Value::Null));
-            }
-            if message.get("method").is_some() && message.get("id").is_some() {
-                let request_id = message.get("id").cloned().unwrap_or(Value::Null);
-                let response = json!({
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": { "decision": "decline" }
-                });
-                write_json_line(&mut transport.writer, &response)?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let backlog_result;
+        {
+            let mut responses = self.responses.lock().map_err(|_| anyhow!("app-server pending requests poisoned"))?;
+            backlog_result = responses.backlog.remove(&id);
+            if backlog_result.is_none() {
+                responses.pending.insert(id, sender);
             }
         }
+        let write_result = self
+            .writer
+            .lock()
+            .map_err(|_| anyhow!("app-server writer poisoned"))
+            .and_then(|mut writer| write_json_line(&mut **writer, &request));
+        if let Err(error) = write_result {
+            if backlog_result.is_none() {
+                let _ = self.responses.lock().map(|mut responses| responses.pending.remove(&id));
+            }
+            return Err(error);
+        }
+        if let Some(result) = backlog_result {
+            return result;
+        }
+        receiver.recv().context("receive app-server response")?
     }
 
     pub fn notify(&self, method: &str, params: Value) -> Result<()> {
@@ -169,14 +214,40 @@ impl AppServerClient {
             method: method.into(),
             params,
         };
-        let mut transport = self.transport.lock().map_err(|_| anyhow!("app-server transport poisoned"))?;
-        write_json_line(&mut transport.writer, &notification)
+        let mut writer = self.writer.lock().map_err(|_| anyhow!("app-server writer poisoned"))?;
+        write_json_line(&mut **writer, &notification)
     }
 
     pub fn respond(&self, id: Value, result: Value) -> Result<()> {
-        let response = json!({ "jsonrpc": "2.0", "id": id, "result": result });
-        let mut transport = self.transport.lock().map_err(|_| anyhow!("app-server transport poisoned"))?;
-        write_json_line(&mut transport.writer, &response)
+        let response = json!({ "id": id, "result": result });
+        let mut writer = self.writer.lock().map_err(|_| anyhow!("app-server writer poisoned"))?;
+        write_json_line(&mut **writer, &response)
+    }
+
+    pub fn next_event(&self, timeout: Duration) -> Option<Value> {
+        let (lock, wake) = &*self.inbox;
+        let mut inbox = lock.lock().ok()?;
+        loop {
+            if let Some(event) = inbox.queue.pop_front() {
+                return Some(event);
+            }
+            if inbox.closed {
+                return None;
+            }
+            let (next, result) = wake.wait_timeout(inbox, timeout).ok()?;
+            inbox = next;
+            if result.timed_out() {
+                return None;
+            }
+        }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.inbox.0.lock().map(|inbox| inbox.closed).unwrap_or(true)
+    }
+
+    pub fn close_reason(&self) -> Option<String> {
+        self.inbox.0.lock().ok().and_then(|inbox| inbox.close_reason.clone())
     }
 
     pub fn initialize(&self) -> Result<Value> {
@@ -224,6 +295,10 @@ impl AppServerClient {
         self.request("thread/start", params)
     }
 
+    pub fn thread_fork(&self, thread_id: &str) -> Result<Value> {
+        self.request("thread/fork", json!({ "threadId": thread_id }))
+    }
+
     pub fn thread_resume(&self, thread_id: &str) -> Result<Value> {
         self.request("thread/resume", json!({ "threadId": thread_id }))
     }
@@ -233,8 +308,43 @@ impl AppServerClient {
     }
 
     pub fn turn_start(&self, thread_id: &str, text: &str) -> Result<Value> {
+        self.turn_start_with_options(thread_id, text, None, None, None, None)
+    }
+
+    pub fn turn_start_with_options(
+        &self,
+        thread_id: &str,
+        text: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        cwd: Option<&str>,
+        approval_policy: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "threadId": thread_id,
+            "input": [{ "type": "text", "text": text }],
+        });
+        if let Some(model) = model.filter(|model| !model.is_empty()) {
+            params["model"] = Value::String(model.into());
+        }
+        if let Some(effort) = effort.filter(|effort| !effort.is_empty()) {
+            params["effort"] = Value::String(effort.into());
+        }
+        if let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) {
+            params["cwd"] = Value::String(cwd.into());
+        }
+        if let Some(approval_policy) = approval_policy.filter(|policy| !policy.is_empty()) {
+            params["approvalPolicy"] = Value::String(approval_policy.into());
+        }
         self.request(
             "turn/start",
+            params,
+        )
+    }
+
+    pub fn turn_steer(&self, thread_id: &str, text: &str) -> Result<Value> {
+        self.request(
+            "turn/steer",
             json!({ "threadId": thread_id, "input": [{ "type": "text", "text": text }] }),
         )
     }
@@ -251,8 +361,99 @@ impl AppServerClient {
         self.request("thread/delete", json!({ "threadId": thread_id }))
     }
 
+    pub fn thread_unarchive(&self, thread_id: &str) -> Result<Value> {
+        self.request("thread/unarchive", json!({ "threadId": thread_id }))
+    }
+
+    pub fn thread_unsubscribe(&self, thread_id: &str) -> Result<Value> {
+        self.request("thread/unsubscribe", json!({ "threadId": thread_id }))
+    }
+
+    pub fn thread_compact(&self, thread_id: &str) -> Result<Value> {
+        self.request("thread/compact/start", json!({ "threadId": thread_id }))
+    }
+
+    pub fn thread_shell_command(&self, thread_id: &str, command: &str) -> Result<Value> {
+        self.request("thread/shellCommand", json!({ "threadId": thread_id, "command": command }))
+    }
+
     pub fn thread_name_set(&self, thread_id: &str, name: &str) -> Result<Value> {
         self.request("thread/name/set", json!({ "threadId": thread_id, "name": name }))
+    }
+}
+
+impl Drop for AppServerClient {
+    fn drop(&mut self) {
+        if let Some(child) = &self.child {
+            if let Ok(mut child) = child.lock() {
+                if child.try_wait().ok().flatten().is_none() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
+}
+
+fn read_messages<R>(mut reader: R, responses: Arc<Mutex<ResponseState>>, inbox: Arc<(Mutex<EventInbox>, Condvar)>)
+where
+    R: BufRead,
+{
+    let mut line = String::new();
+    let close_reason = loop {
+        line.clear();
+        let bytes = match reader.read_line(&mut line) {
+            Ok(bytes) => bytes,
+            Err(error) => break Some(format!("read app-server response: {error}")),
+        };
+        if bytes == 0 {
+            break Some("app-server closed the JSONL stream".into());
+        }
+        let wire_line = line.trim();
+        if wire_line.is_empty() || !wire_line.starts_with('{') {
+            continue;
+        }
+        let message: Value = match serde_json::from_str(wire_line) {
+            Ok(message) => message,
+            Err(error) => break Some(format!("decode app-server JSONL message: {error}")),
+        };
+        if let Some(id) = message.get("id").and_then(Value::as_u64) {
+            if message.get("method").is_none() {
+                let result = if let Some(error) = message.get("error") {
+                    Err(anyhow!("app-server request failed: {error}"))
+                } else {
+                    Ok(message.get("result").cloned().unwrap_or(Value::Null))
+                };
+                if let Ok(mut responses) = responses.lock() {
+                    if let Some(sender) = responses.pending.remove(&id) {
+                        let _ = sender.send(result);
+                    } else {
+                        responses.backlog.insert(id, result);
+                    }
+                }
+                continue;
+            }
+        }
+        if message.get("method").is_some() {
+            let (lock, wake) = &*inbox;
+            if let Ok(mut inbox) = lock.lock() {
+                inbox.queue.push_back(message);
+                wake.notify_all();
+            }
+        }
+    };
+
+    if let Ok(mut responses) = responses.lock() {
+        let reason = close_reason.clone().unwrap_or_else(|| "app-server reader stopped".into());
+        for (_, sender) in responses.pending.drain() {
+            let _ = sender.send(Err(anyhow!(reason.clone())));
+        }
+    }
+    let (lock, wake) = &*inbox;
+    if let Ok(mut inbox) = lock.lock() {
+        inbox.closed = true;
+        inbox.close_reason = close_reason;
+        wake.notify_all();
     }
 }
 
@@ -325,6 +526,8 @@ mod tests {
         let bytes = recorded.0.clone();
         let client = AppServerClient::from_parts(Cursor::new(input.into_bytes()), recorded);
         client.request("initialize", json!({})).unwrap();
+        let request = client.next_event(Duration::from_millis(100)).unwrap();
+        client.respond(request["id"].clone(), json!({ "decision": "decline" })).unwrap();
         let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         assert!(output.contains("\"id\":2"));
         assert!(output.contains("decline"));
@@ -336,5 +539,12 @@ mod tests {
         let titled = ServerThread::from_value(&json!({ "id": "b", "title": "Titled" })).unwrap();
         assert_eq!(named.title, "Named");
         assert_eq!(titled.title, "Titled");
+    }
+
+    #[test]
+    fn launcher_noise_before_jsonl_does_not_break_initialize() {
+        let input = b"mise launcher notice\n{\"id\":1,\"result\":{\"ok\":true}}\n";
+        let client = AppServerClient::from_parts(Cursor::new(input), RecordingWriter::default());
+        assert_eq!(client.request("initialize", json!({})).unwrap()["ok"], true);
     }
 }
