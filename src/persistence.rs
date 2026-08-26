@@ -21,6 +21,8 @@ pub struct Snapshot {
     pub selected_task: String,
     #[serde(default)]
     pub sidebar_collapsed: bool,
+    #[serde(default)]
+    pub show_archived: bool,
 }
 
 impl Snapshot {
@@ -43,6 +45,7 @@ impl Snapshot {
             selected_project: project,
             selected_task: task,
             sidebar_collapsed: false,
+            show_archived: false,
         }
     }
 }

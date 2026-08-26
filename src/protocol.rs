@@ -635,6 +635,10 @@ mod tests {
             json!({ "jsonrpc": "2.0", "id": 3, "result": { "thread": { "id": "t-2" } } }),
             json!({ "jsonrpc": "2.0", "id": 4, "result": { "turn": { "id": "turn-1" } } }),
             json!({ "jsonrpc": "2.0", "id": 5, "result": {} }),
+            json!({ "jsonrpc": "2.0", "id": 6, "result": {} }),
+            json!({ "jsonrpc": "2.0", "id": 7, "result": {} }),
+            json!({ "jsonrpc": "2.0", "id": 8, "result": { "thread": { "id": "t-2", "status": "idle" } } }),
+            json!({ "jsonrpc": "2.0", "id": 9, "result": {} }),
         ];
         let input = fixture
             .iter()
@@ -656,13 +660,19 @@ mod tests {
             "turn-1"
         );
         client.turn_interrupt("t-2", "turn-1").unwrap();
+        client.thread_archive("t-2").unwrap();
+        client.thread_unarchive("t-2").unwrap();
+        assert_eq!(client.thread_resume("t-2").unwrap()["thread"]["id"], "t-2");
+        client.review_start("t-2").unwrap();
 
         let recorded_output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         let lines = recorded_output.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 6);
+        assert_eq!(lines.len(), 10);
         assert!(lines[0].contains("initialize"));
         assert!(lines[1].contains("initialized"));
         assert!(lines[4].contains("turn/start"));
+        assert!(lines[7].contains("thread/unarchive"));
+        assert!(lines[9].contains("review/start"));
     }
 
     #[test]

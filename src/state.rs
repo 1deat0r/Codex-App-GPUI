@@ -63,6 +63,7 @@ pub struct AppState {
     pub menu_open: bool,
     pub view_open: bool,
     pub sidebar_collapsed: bool,
+    pub show_archived: bool,
     pub search_open: bool,
     pub toast: Option<String>,
     pub connection: ConnectionState,
@@ -101,7 +102,8 @@ impl AppState {
             attachments: Vec::new(),
             menu_open: false,
             view_open: false,
-            sidebar_collapsed: false,
+            sidebar_collapsed: snapshot.sidebar_collapsed,
+            show_archived: snapshot.show_archived,
             search_open: false,
             toast: None,
             connection: ConnectionState::Demo,
@@ -130,6 +132,7 @@ impl AppState {
             selected_project: self.selected_project.clone(),
             selected_task: self.selected_task.clone(),
             sidebar_collapsed: self.sidebar_collapsed,
+            show_archived: self.show_archived,
         }
     }
 
@@ -564,7 +567,7 @@ impl AppState {
     pub fn visible_tasks<'a>(&'a self, project: &'a Project) -> impl Iterator<Item = &'a Task> {
         let query = self.query.trim().to_lowercase();
         project.tasks.iter().filter(move |task| {
-            !task.archived
+            (self.show_archived || !task.archived)
                 && (query.is_empty()
                     || task.title.to_lowercase().contains(&query)
                     || project.name.to_lowercase().contains(&query))
@@ -1156,6 +1159,14 @@ impl AppState {
         cx.notify();
     }
 
+    pub fn toggle_archived_visibility(&mut self, cx: &mut Context<Self>) {
+        self.show_archived = !self.show_archived;
+        self.view_open = false;
+        self.ensure_selection();
+        self.persist(cx);
+        cx.notify();
+    }
+
     pub fn archive_current(&mut self, cx: &mut Context<Self>) {
         let task_id = self.selected_task.clone();
         let live =
@@ -1170,6 +1181,75 @@ impl AppState {
         if live {
             self.request_thread_action(task_id, ThreadAction::Archive, cx);
         }
+    }
+
+    pub fn unarchive_current(&mut self, cx: &mut Context<Self>) {
+        let task_id = self.selected_task.clone();
+        let live =
+            self.connection == ConnectionState::Live && self.selected_project == "live-codex";
+        let archived = self
+            .current_task()
+            .map(|task| task.archived)
+            .unwrap_or(false);
+        if !archived {
+            return;
+        }
+        if let Some(task) = self.current_task_mut() {
+            task.archived = false;
+            task.status = "idle".into();
+        }
+        self.persist(cx);
+        self.notify_success(&format!("Unarchived {task_id}"), cx);
+        if live {
+            self.request_thread_action(task_id, ThreadAction::Unarchive, cx);
+        }
+    }
+
+    pub fn resume_current(&mut self, cx: &mut Context<Self>) {
+        let task_id = self.selected_task.clone();
+        let live =
+            self.connection == ConnectionState::Live && self.selected_project == "live-codex";
+        let closed = self
+            .current_task()
+            .map(|task| task.status == "closed")
+            .unwrap_or(false);
+        if !closed {
+            return;
+        }
+        if let Some(task) = self.current_task_mut() {
+            task.status = "idle".into();
+        }
+        self.persist(cx);
+        self.notify_success("Task resumed", cx);
+        if !live {
+            return;
+        }
+        let Some(client) = self.live_client.clone() else {
+            return;
+        };
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(
+                        async move { smol::unblock(move || client.thread_resume(&task_id)).await },
+                    )
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(value) => {
+                        if let Some(thread) = value.get("thread").and_then(ServerThread::from_value)
+                        {
+                            this.add_server_thread(thread);
+                            this.persist(cx);
+                            cx.notify();
+                        }
+                    }
+                    Err(error) => this.fail(&format!("Resume failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
     }
 
     pub fn toggle_pin_current(&mut self, cx: &mut Context<Self>) {
@@ -1258,6 +1338,7 @@ impl AppState {
                     .spawn(async move {
                         smol::unblock(move || match action {
                             ThreadAction::Archive => client.thread_archive(&thread_id),
+                            ThreadAction::Unarchive => client.thread_unarchive(&thread_id),
                             ThreadAction::Delete => client.thread_delete(&thread_id),
                         })
                         .await
@@ -1518,11 +1599,16 @@ impl AppState {
         let selected_exists = self
             .workspace
             .task(&self.selected_project, &self.selected_task)
+            .map(|task| self.show_archived || !task.archived)
             .is_some();
         if selected_exists {
             return;
         }
-        if let Some((project, task)) = self.workspace.all_tasks().find(|(_, task)| !task.archived) {
+        if let Some((project, task)) = self
+            .workspace
+            .all_tasks()
+            .find(|(_, task)| self.show_archived || !task.archived)
+        {
             self.selected_project = project.id.clone();
             self.selected_task = task.id.clone();
         }
@@ -1634,6 +1720,7 @@ impl AppState {
 #[derive(Debug, Clone, Copy)]
 enum ThreadAction {
     Archive,
+    Unarchive,
     Delete,
 }
 

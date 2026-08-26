@@ -37,7 +37,7 @@ Reference: Codex Desktop 26.820.60940
 | data-01 | Durable state | `src/persistence.rs` | implemented | G5: atomic snapshot write/read/reopen |
 | data-02 | Import/export boundaries | `src/persistence.rs`, `scripts/check-safety.mjs` | implemented | G5/G10: persistence and repository safety checks |
 | collab-01 | Share and review | `src/ui.rs`, `src/protocol.rs` | blocked | G8/G9: share is currently a local codex:// affordance; external review/share provider unavailable |
-| collab-02 | Threads/tasks | `src/state.rs`, `src/protocol.rs`, `src/ui.rs` | implemented | G2/G4/G8: live thread lifecycle adapter plus native task creation, archive, delete, and rename paths; fork/resume/handoff coverage remains incomplete |
+| collab-02 | Threads/tasks | `src/state.rs`, `src/protocol.rs`, `src/ui.rs` | implemented | G2/G4/G8: live thread lifecycle adapter plus native task creation, archive, unarchive, resume, delete, and rename paths; fork/handoff coverage remains incomplete |
 | nav-01 | Settings | `src/model.rs`, `src/state.rs`, `src/ui.rs` | implemented | G2/G8: 11-page settings model and native General settings screenshot `/tmp/codex-app-gpui-fixture-settings-fixed.png`; external account/connectors remain unavailable |
 | nav-02 | Top-level destinations | `src/state.rs`, `src/ui.rs` | blocked | G7/G8: navigation cards exist; connector/hosting integrations are unavailable in this isolated client |
 | runtime-01 | Headless runtime | `src/main.rs`, `scripts/` | verified | G6: `PARITY_G6_SMOKE_OK` |

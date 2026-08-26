@@ -215,6 +215,17 @@ fn app_menu_popup(
                     this.toggle_view_options(cx);
                 }),
             ),
+            menu_action(
+                "app-view-archived",
+                if state.show_archived {
+                    "Hide archived tasks"
+                } else {
+                    "Show archived tasks"
+                },
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.toggle_archived_visibility(cx);
+                }),
+            ),
         ],
         AppMenu::Help => vec![
             menu_action(
@@ -513,7 +524,7 @@ fn compact_sidebar(
                     state
                         .workspace
                         .all_tasks()
-                        .filter(|(_, task)| !task.archived)
+                        .filter(|(_, task)| state.show_archived || !task.archived)
                         .take(24)
                         .map(|(project, task)| {
                             let project_id = project.id.clone();
@@ -758,7 +769,9 @@ fn recent_tasks(
     let rows = state
         .workspace
         .all_tasks()
-        .filter(|(_, task)| task.project_id != state.selected_project && !task.archived)
+        .filter(|(_, task)| {
+            task.project_id != state.selected_project && (state.show_archived || !task.archived)
+        })
         .take(18)
         .map(|(project, task)| task_row(task, project.id.clone(), state, window, cx))
         .collect::<Vec<_>>();
@@ -1019,6 +1032,17 @@ fn view_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) 
                 }),
             ),
             menu_action(
+                "view-toggle-archived",
+                if state.show_archived {
+                    "Hide archived tasks"
+                } else {
+                    "Show archived tasks"
+                },
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.toggle_archived_visibility(cx);
+                }),
+            ),
+            menu_action(
                 "view-reset",
                 "Reset view",
                 window.listener_for(&cx.entity(), |this, _event, _window, cx| {
@@ -1087,9 +1111,25 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
             ),
             menu_action(
                 "menu-archive",
-                "Archive task",
+                if state
+                    .current_task()
+                    .map(|task| task.archived)
+                    .unwrap_or(false)
+                {
+                    "Unarchive task"
+                } else {
+                    "Archive task"
+                },
                 window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                    this.archive_current(cx);
+                    if this
+                        .current_task()
+                        .map(|task| task.archived)
+                        .unwrap_or(false)
+                    {
+                        this.unarchive_current(cx);
+                    } else {
+                        this.archive_current(cx);
+                    }
                 }),
             ),
             menu_action(
@@ -1107,6 +1147,20 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
                 }),
             ),
         ])
+        .children(
+            state
+                .current_task()
+                .filter(|task| task.status == "closed")
+                .map(|_| {
+                    menu_action(
+                        "menu-resume",
+                        "Resume task",
+                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                            this.resume_current(cx);
+                        }),
+                    )
+                }),
+        )
         .children((state.route == Route::Task && state.streaming).then(|| {
             menu_action(
                 "menu-stop",
