@@ -55,9 +55,13 @@ pub struct AppState {
     pub live_client: Option<Arc<AppServerClient>>,
     pub active_turn_id: Option<String>,
     pub pending_approval_id: Option<Value>,
+    pub rename_open: bool,
+    pub rename_draft: String,
+    pub rename_caret: usize,
     event_loop_started: bool,
     pub input_focus: FocusHandle,
     pub search_focus: FocusHandle,
+    pub rename_focus: FocusHandle,
 }
 
 impl AppState {
@@ -84,9 +88,13 @@ impl AppState {
             live_client: None,
             active_turn_id: None,
             pending_approval_id: None,
+            rename_open: false,
+            rename_draft: String::new(),
+            rename_caret: 0,
             event_loop_started: false,
             input_focus: cx.focus_handle(),
             search_focus: cx.focus_handle(),
+            rename_focus: cx.focus_handle(),
         };
         state.ensure_selection();
         state
@@ -106,12 +114,13 @@ impl AppState {
         let Some(command) = command else {
             return;
         };
+        let cwd = std::env::current_dir().ok().and_then(|path| path.to_str().map(str::to_owned));
         self.connection = ConnectionState::Connecting;
         let async_cx = cx.to_async();
         cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
             let result = async_cx
                 .background_executor()
-                .spawn(async move { smol::unblock(move || connect_live(&command)).await })
+                .spawn(async move { smol::unblock(move || connect_live(&command, cwd.as_deref())).await })
                 .await;
             let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
                 Ok((client, threads)) => {
@@ -233,16 +242,22 @@ impl AppState {
                     persist = true;
                 }
             }
+            "thread/closed" => {
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    task.status = "closed".into();
+                    persist = true;
+                }
+            }
             "turn/started" => {
-                self.active_turn_id = params
-                    .get("turn")
-                    .and_then(|turn| turn.get("id"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
                 if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
                     task.status = "running".into();
                 }
                 if thread_id == Some(self.selected_task.as_str()) {
+                    self.active_turn_id = params
+                        .get("turn")
+                        .and_then(|turn| turn.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
                     self.streaming = true;
                 }
             }
@@ -334,8 +349,25 @@ impl AppState {
                     }
                 }
             }
-            "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+            | "item/tool/requestUserInput" => {
                 self.add_approval_request(&event, &params, method);
+                persist = true;
+            }
+            "serverRequest/resolved" => {
+                if params.get("requestId") == self.pending_approval_id.as_ref() {
+                    self.pending_approval_id = None;
+                    if let Some(task) = self.current_task_mut() {
+                        for entry in &mut task.entries {
+                            if let Entry::Approval { requested, .. } = entry {
+                                *requested = false;
+                            }
+                        }
+                    }
+                    persist = true;
+                }
             }
             "error" | "warning" => {
                 if let Some(message) = params.get("message").and_then(Value::as_str) {
@@ -370,10 +402,19 @@ impl AppState {
         let item_id = params.get("itemId").and_then(Value::as_str).unwrap_or("approval");
         let entry = Entry::Approval {
             id: item_id.into(),
-            title: if method.contains("fileChange") { "Apply file changes" } else { "Run command" }.into(),
-            command: params.get("command").and_then(Value::as_str).unwrap_or("Codex requested an external action").into(),
-            cwd: params.get("cwd").and_then(Value::as_str).unwrap_or_default().into(),
-            reason: params.get("reason").and_then(Value::as_str).unwrap_or("User approval required").into(),
+            title: if method.contains("fileChange") {
+                "Apply file changes"
+            } else if method.contains("permissions") {
+                "Grant additional permissions"
+            } else if method.contains("requestUserInput") {
+                "Codex needs input"
+            } else {
+                "Run command"
+            }
+            .into(),
+            command: string_field(params, &["command", "questions", "message", "toolName"]),
+            cwd: string_field(params, &["cwd", "environmentId"]),
+            reason: string_field(params, &["reason", "message"]),
             requested: true,
         };
         if let Some(task) = self.task_mut_by_id(&thread_id) {
@@ -445,9 +486,11 @@ impl AppState {
     pub fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_open = !self.search_open;
         if self.search_open {
+            self.caret = self.query.chars().count();
             window.focus(&self.search_focus);
         } else {
             self.query.clear();
+            self.caret = self.draft.chars().count();
         }
         cx.notify();
     }
@@ -460,6 +503,8 @@ impl AppState {
         self.caret = 0;
         self.attachments.clear();
         self.menu_open = false;
+        self.rename_open = false;
+        self.rename_draft.clear();
         self.streaming = self.current_task().map(|task| task.status == "running").unwrap_or(false);
         self.persist(cx);
         if self.connection == ConnectionState::Live && self.selected_project == "live-codex" {
@@ -528,6 +573,7 @@ impl AppState {
     pub fn set_route(&mut self, route: Route, cx: &mut Context<Self>) {
         self.route = route;
         self.menu_open = false;
+        self.rename_open = false;
         cx.notify();
     }
 
@@ -574,7 +620,8 @@ impl AppState {
         self.attachments.clear();
         self.persist(cx);
 
-        if let Some(client) = self.live_client.clone() {
+        if self.selected_project == "live-codex" {
+            if let Some(client) = self.live_client.clone() {
             let model = self.current_task().map(|task| task.model.clone()).unwrap_or_else(|| self.settings.default_model.clone());
             let effort = self.current_task().map(|task| task.reasoning.clone()).unwrap_or_else(|| self.settings.default_reasoning.clone());
             let cwd = self.current_task().map(|task| task.path.clone());
@@ -618,6 +665,7 @@ impl AppState {
                 });
             })
             .detach();
+            }
         } else {
             let async_cx = cx.to_async();
             cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
@@ -717,7 +765,61 @@ impl AppState {
     }
 
     pub fn share_current(&mut self, cx: &mut Context<Self>) {
-        self.notify_success("Share link copied", cx);
+        let link = format!("codex://thread/{}", self.selected_task);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(link));
+        self.notify_success("Thread link copied", cx);
+    }
+
+    pub fn begin_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(task) = self.current_task() else {
+            return;
+        };
+        self.rename_draft = task.title.clone();
+        self.rename_caret = self.rename_draft.chars().count();
+        self.rename_open = true;
+        self.menu_open = false;
+        window.focus(&self.rename_focus);
+        cx.notify();
+    }
+
+    pub fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        self.rename_open = false;
+        self.rename_draft.clear();
+        self.rename_caret = 0;
+        cx.notify();
+    }
+
+    pub fn commit_rename(&mut self, cx: &mut Context<Self>) {
+        let name = self.rename_draft.trim().to_string();
+        if name.is_empty() {
+            self.cancel_rename(cx);
+            return;
+        }
+        let thread_id = self.selected_task.clone();
+        let live = self.connection == ConnectionState::Live && self.selected_project == "live-codex";
+        if let Some(task) = self.current_task_mut() {
+            task.title = name.clone();
+        }
+        self.rename_open = false;
+        self.rename_draft.clear();
+        self.rename_caret = 0;
+        self.persist(cx);
+        if live {
+            if let Some(client) = self.live_client.clone() {
+                let async_cx = cx.to_async();
+                cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                    let result = async_cx
+                        .background_executor()
+                        .spawn(async move { smol::unblock(move || client.thread_name_set(&thread_id, &name)).await })
+                        .await;
+                    if let Err(error) = result {
+                        let _ = this.update(&mut async_cx.clone(), |this, cx| this.fail(&format!("Rename failed: {error}"), cx));
+                    }
+                })
+                .detach();
+            }
+        }
+        self.notify_success("Task renamed", cx);
     }
 
     pub fn toggle_menu(&mut self, cx: &mut Context<Self>) {
@@ -727,6 +829,7 @@ impl AppState {
 
     pub fn archive_current(&mut self, cx: &mut Context<Self>) {
         let task_id = self.selected_task.clone();
+        let live = self.connection == ConnectionState::Live && self.selected_project == "live-codex";
         if let Some(task) = self.current_task_mut() {
             task.archived = true;
             task.status = "archived".into();
@@ -734,17 +837,77 @@ impl AppState {
         self.ensure_selection();
         self.persist(cx);
         self.notify_success(&format!("Archived {task_id}"), cx);
+        if live {
+            self.request_thread_action(task_id, ThreadAction::Archive, cx);
+        }
     }
 
     pub fn delete_current(&mut self, cx: &mut Context<Self>) {
         let project_id = self.selected_project.clone();
         let task_id = self.selected_task.clone();
+        let live = self.connection == ConnectionState::Live && project_id == "live-codex";
         if let Some(project) = self.workspace.projects.iter_mut().find(|project| project.id == project_id) {
             project.tasks.retain(|task| task.id != task_id);
         }
         self.ensure_selection();
         self.persist(cx);
         self.notify_success("Task deleted", cx);
+        if live {
+            self.request_thread_action(task_id, ThreadAction::Delete, cx);
+        }
+    }
+
+    pub fn fork_current(&mut self, cx: &mut Context<Self>) {
+        if self.connection != ConnectionState::Live || self.selected_project != "live-codex" {
+            self.notify_success("Fork is available for live Codex tasks", cx);
+            return;
+        }
+        let Some(client) = self.live_client.clone() else {
+            return;
+        };
+        let thread_id = self.selected_task.clone();
+        let async_cx = cx.to_async();
+        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+            let result = async_cx
+                .background_executor()
+                .spawn(async move { smol::unblock(move || client.thread_fork(&thread_id)).await })
+                .await;
+            let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                Ok(value) => {
+                    if let Some(thread) = value.get("thread").and_then(ServerThread::from_value) {
+                        let new_id = thread.id.clone();
+                        this.add_server_thread(thread);
+                        this.select_task("live-codex".into(), new_id, cx);
+                        this.notify_success("Task forked", cx);
+                    }
+                }
+                Err(error) => this.fail(&format!("Fork failed: {error}"), cx),
+            });
+        })
+        .detach();
+    }
+
+    fn request_thread_action(&self, thread_id: String, action: ThreadAction, cx: &mut Context<Self>) {
+        let Some(client) = self.live_client.clone() else {
+            return;
+        };
+        let async_cx = cx.to_async();
+        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+            let result = async_cx
+                .background_executor()
+                .spawn(async move {
+                    smol::unblock(move || match action {
+                        ThreadAction::Archive => client.thread_archive(&thread_id),
+                        ThreadAction::Delete => client.thread_delete(&thread_id),
+                    })
+                    .await
+                })
+                .await;
+            if let Err(error) = result {
+                let _ = this.update(&mut async_cx.clone(), |this, cx| this.fail(&format!("Task action failed: {error}"), cx));
+            }
+        })
+        .detach();
     }
 
     pub fn approve_current(&mut self, approved: bool, cx: &mut Context<Self>) {
@@ -789,6 +952,31 @@ impl AppState {
         }
     }
 
+    pub fn handle_global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = &event.keystroke;
+        if key.key == "escape" {
+            if self.rename_open {
+                self.cancel_rename(cx);
+            } else if self.menu_open {
+                self.menu_open = false;
+                cx.notify();
+            } else if self.search_open {
+                self.search_open = false;
+                self.query.clear();
+                cx.notify();
+            }
+            return;
+        }
+        let command = key.modifiers.platform || key.modifiers.control;
+        if command && key.key == "k" {
+            self.toggle_search(window, cx);
+        } else if command && key.key == "n" {
+            self.create_live_task(cx);
+        } else if key.key == "f2" && self.route == Route::Task {
+            self.begin_rename(window, cx);
+        }
+    }
+
     pub fn handle_search_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = &event.keystroke;
         if key.key == "escape" {
@@ -805,6 +993,22 @@ impl AppState {
             window.focus(&self.search_focus);
         }
         cx.notify();
+    }
+
+    pub fn handle_rename_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = &event.keystroke;
+        if key.key == "escape" {
+            self.cancel_rename(cx);
+            return;
+        }
+        if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
+            return;
+        }
+        if apply_input_edit(&mut self.rename_draft, &mut self.rename_caret, &key.key, key.key_char.as_deref(), key.modifiers.shift, false) == InputAction::Send {
+            self.commit_rename(cx);
+        } else {
+            cx.notify();
+        }
     }
 
     fn ensure_selection(&mut self) {
@@ -873,23 +1077,38 @@ impl AppState {
             self.workspace.projects.insert(0, Project { id: "live-codex".into(), name: "Live Codex".into(), path: thread.cwd.clone(), collapsed: false, tasks: Vec::new() });
         }
         if let Some(project) = self.workspace.projects.iter_mut().find(|project| project.id == "live-codex") {
-            if let Some(task) = project.tasks.iter_mut().find(|task| task.id == thread.id) {
-                task.title = thread.title;
-                task.status = thread.status;
-                task.path = thread.cwd;
+        if let Some(task) = project.tasks.iter_mut().find(|task| task.id == thread.id) {
+            task.title = thread.title;
+            task.status = thread.status;
+            task.path = thread.cwd;
+            if !thread.model.is_empty() {
                 task.model = thread.model;
-                task.updated_at = thread.updated_at;
-            } else {
-                project.tasks.insert(0, task_from_server(&thread));
             }
+            if !thread.updated_at.is_empty() {
+                task.updated_at = thread.updated_at;
+            }
+        } else {
+            project.tasks.insert(0, task_from_server(&thread));
+        }
         }
     }
 }
 
-fn connect_live(command: &str) -> anyhow::Result<(Arc<AppServerClient>, Vec<ServerThread>)> {
+#[derive(Debug, Clone, Copy)]
+enum ThreadAction {
+    Archive,
+    Delete,
+}
+
+fn connect_live(command: &str, cwd: Option<&str>) -> anyhow::Result<(Arc<AppServerClient>, Vec<ServerThread>)> {
     let client = Arc::new(AppServerClient::spawn(command)?);
     client.initialize()?;
-    let threads = client.thread_list(None)?;
+    let mut threads = client.thread_list(None)?;
+    if threads.is_empty() && std::env::var_os("CODEX_APP_GPUI_CREATE_LIVE_THREAD").is_some() {
+        if let Some(thread) = client.thread_start(cwd)?.get("thread").and_then(ServerThread::from_value) {
+            threads.push(thread);
+        }
+    }
     Ok((client, threads))
 }
 
@@ -918,6 +1137,8 @@ fn event_thread_id(params: &Value) -> Option<&str> {
         .get("threadId")
         .and_then(Value::as_str)
         .or_else(|| params.get("thread").and_then(|thread| thread.get("id")).and_then(Value::as_str))
+        .or_else(|| params.get("turn").and_then(|turn| turn.get("threadId")).and_then(Value::as_str))
+        .or_else(|| params.get("item").and_then(|item| item.get("threadId")).and_then(Value::as_str))
 }
 
 fn status_text(value: &Value) -> String {
@@ -1047,7 +1268,7 @@ fn entry_from_server_item(item: &Value) -> Option<Entry> {
                 .join(", ");
             Some(Entry::Diff { id, path, additions, deletions, summary })
         }
-        "mcpToolCall" | "collabToolCall" | "webSearch" => Some(Entry::Tool {
+        "mcpToolCall" | "collabToolCall" | "collabAgentToolCall" | "webSearch" => Some(Entry::Tool {
             id,
             name: item_type.into(),
             status: normalize_item_status(string_field(item, &["status"])),

@@ -42,13 +42,15 @@ fn main() {
             ))),
             ..Default::default()
         };
-        app.open_window(window, move |_window, app| {
+        app.open_window(window, move |window, app| {
             let snapshot = snapshot.clone();
-            app.new(|cx| {
+            let entity = app.new(|cx| {
                 let mut state = AppState::new(snapshot, cx);
                 state.init(cx);
                 state
-            })
+            });
+            window.focus(&entity.read(app).input_focus);
+            entity
         })
         .expect("open Codex App GPUI window");
     });

@@ -28,7 +28,13 @@ For a deterministic no-window check:
 cargo run -- --smoke
 ```
 
-The native client can use fixture data for offline development and can be pointed at a local Codex app-server with `CODEX_APP_SERVER_COMMAND` or `CODEX_APP_SERVER_URL`.
+The native client uses fixture data by default. To attach it to a local Codex app-server, set the command explicitly:
+
+```sh
+CODEX_APP_SERVER_COMMAND='codex app-server --stdio' node scripts/run-cargo.mjs run --locked
+```
+
+For isolated live-window validation, `CODEX_APP_GPUI_CREATE_LIVE_THREAD=1` asks the client to create an empty server-owned thread when the isolated `CODEX_HOME` has no history. Keep `CODEX_HOME` pointed at a temporary directory for that check so the reference desktop's user data is not changed.
 
 ## Verification
 

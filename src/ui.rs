@@ -16,6 +16,9 @@ pub fn root(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
         .flex_col()
         .bg(theme::BG_BASE)
         .text_color(theme::TEXT)
+        .on_key_down(window.listener_for(&cx.entity(), |this, event, window, cx| {
+            this.handle_global_key(event, window, cx);
+        }))
         .child(menu_bar())
         .child(
             div()
@@ -431,6 +434,37 @@ fn thread_header(state: &AppState, window: &mut Window, cx: &mut Context<AppStat
         Route::Scheduled => ("Codex".into(), "Scheduled".into()),
         Route::Plugins => ("Codex".into(), "Plugins".into()),
     };
+    let title_view = if state.rename_open {
+        div()
+            .id("rename-input")
+            .min_w(px(240.0))
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(theme::BG_SURFACE)
+            .border_1()
+            .border_color(theme::ACCENT)
+            .track_focus(&state.rename_focus)
+            .tab_index(0)
+            .cursor_text()
+            .text_size(rems(0.82))
+            .text_color(theme::TEXT)
+            .child(render_with_caret(&state.rename_draft, state.rename_caret))
+            .on_click(window.listener_for(&cx.entity(), |this, _event, window, _cx| {
+                window.focus(&this.rename_focus);
+            }))
+            .on_key_down(window.listener_for(&cx.entity(), |this, event, _window, cx| {
+                this.handle_rename_key(event, cx);
+            }))
+    } else {
+        div()
+            .id("title-view")
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(div().text_size(rems(0.72)).text_color(theme::TEXT_FAINT).child(eyebrow))
+            .child(div().text_size(rems(0.82)).text_color(theme::TEXT).truncate().child(title))
+    };
     div()
         .id("thread-header")
         .h(px(48.0))
@@ -441,7 +475,7 @@ fn thread_header(state: &AppState, window: &mut Window, cx: &mut Context<AppStat
         .border_b_1()
         .border_color(theme::BORDER)
         .child(div().text_color(theme::TEXT_MUTED).text_size(rems(0.8)).child("▱"))
-        .child(div().flex().flex_col().gap_0p5().child(div().text_size(rems(0.72)).text_color(theme::TEXT_FAINT).child(eyebrow)).child(div().text_size(rems(0.82)).text_color(theme::TEXT).truncate().child(title)))
+        .child(title_view)
         .child(div().flex_1().child(""))
         .children((state.route == Route::Task).then(|| {
             div().text_size(rems(0.7)).text_color(theme::TEXT_FAINT).child(state.connection.label())
@@ -489,8 +523,11 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
         .rounded_lg()
         .shadow_lg()
         .children([
-            menu_action("menu-rename", "Rename task", window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                this.notify_success("Rename is ready in the task metadata", cx);
+            menu_action("menu-rename", "Rename task", window.listener_for(&cx.entity(), |this, _event, window, cx| {
+                this.begin_rename(window, cx);
+            })),
+            menu_action("menu-fork", "Fork task", window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.fork_current(cx);
             })),
             menu_action("menu-archive", "Archive task", window.listener_for(&cx.entity(), |this, _event, _window, cx| {
                 this.archive_current(cx);
