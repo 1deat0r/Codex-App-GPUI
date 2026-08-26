@@ -1578,6 +1578,7 @@ fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                     .flex()
                     .gap_1()
                     .children(state.attachments.iter().enumerate().map(|(index, name)| {
+                        let attachment_index = index;
                         let label = Path::new(name)
                             .file_name()
                             .and_then(|file_name| file_name.to_str())
@@ -1592,6 +1593,23 @@ fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                             .text_size(rems(0.68))
                             .text_color(theme::TEXT)
                             .child(format!("▧ {label}"))
+                            .child(
+                                div()
+                                    .id(ElementId::Name(
+                                        format!("attachment-remove-{index}").into(),
+                                    ))
+                                    .px_1()
+                                    .cursor_pointer()
+                                    .text_color(theme::TEXT_FAINT)
+                                    .child("×")
+                                    .on_click(window.listener_for(
+                                        &cx.entity(),
+                                        move |this, _event, _window, cx| {
+                                            this.remove_attachment(attachment_index, cx);
+                                        },
+                                    ))
+                                    .hover(|style| style.text_color(theme::TEXT)),
+                            )
                     }))
             }))
             .child(

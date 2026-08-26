@@ -958,6 +958,15 @@ impl AppState {
         self.notify_success("Attachment staged", cx);
     }
 
+    pub fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.attachments.len() {
+            return;
+        }
+        let name = attachment_name(&self.attachments[index]);
+        self.attachments.remove(index);
+        self.notify_success(&format!("Removed {name}"), cx);
+    }
+
     pub fn pick_attachments(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
