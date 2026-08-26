@@ -1208,6 +1208,8 @@ impl AppState {
             self.toggle_search(window, cx);
         } else if command && key.key == "n" {
             self.create_live_task(cx);
+        } else if command && key.modifiers.shift && key.key == "b" {
+            self.toggle_sidebar(cx);
         } else if key.key == "f2" && self.route == Route::Task {
             self.begin_rename(window, cx);
         }

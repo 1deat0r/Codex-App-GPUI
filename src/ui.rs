@@ -1871,7 +1871,10 @@ fn settings_page_body(
                 "Close menus and search",
                 "Escape".into(),
                 None,
-            )),
+            ))
+            .child(setting_row("⌘ ⇧ B", "Toggle sidebar", "⌘ ⇧ B".into(), None))
+            .child(setting_row("F2", "Rename current task", "F2".into(), None))
+            .child(setting_row("⌘ N", "Create a new task", "⌘ N".into(), None)),
         SettingsPage::Worktrees => div()
             .flex()
             .flex_col()
