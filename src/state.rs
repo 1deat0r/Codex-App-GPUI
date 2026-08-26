@@ -208,7 +208,14 @@ impl AppState {
                 let result = async_cx
                     .background_executor()
                     .spawn(async move {
-                        smol::unblock(move || client.thread_read(&request_thread_id)).await
+                        smol::unblock(move || match client.thread_read(&request_thread_id) {
+                            Ok(value) => Ok(value),
+                            Err(error) if is_empty_thread_read_error(&error) => {
+                                client.thread_read_summary(&request_thread_id)
+                            }
+                            Err(error) => Err(error),
+                        })
+                        .await
                     })
                     .await;
                 let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
@@ -1529,6 +1536,11 @@ fn number_field(value: &Value, names: &[&str]) -> u64 {
         .iter()
         .find_map(|name| value.get(*name).and_then(Value::as_u64))
         .unwrap_or_default()
+}
+
+fn is_empty_thread_read_error(error: &anyhow::Error) -> bool {
+    let text = error.to_string().to_lowercase();
+    text.contains("not materialized") || text.contains("includeturns is unavailable")
 }
 
 fn entry_from_server_item(item: &Value) -> Option<Entry> {

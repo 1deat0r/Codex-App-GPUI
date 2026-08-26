@@ -365,6 +365,13 @@ impl AppServerClient {
         )
     }
 
+    pub fn thread_read_summary(&self, thread_id: &str) -> Result<Value> {
+        self.request(
+            "thread/read",
+            json!({ "threadId": thread_id, "includeTurns": false }),
+        )
+    }
+
     pub fn turn_start(&self, thread_id: &str, text: &str) -> Result<Value> {
         self.turn_start_with_options(thread_id, text, None, None, None, None)
     }
