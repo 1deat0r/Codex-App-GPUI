@@ -33,13 +33,13 @@ Reference: Codex Desktop 26.820.60940
 | exec-01 | App-server connection | `src/protocol.rs` | planned | G4/G9 |
 | exec-02 | Tool execution | `src/model.rs`, `src/ui.rs` | planned | G2/G7 |
 | exec-03 | Approvals | `src/state.rs`, `src/protocol.rs`, `src/ui.rs` | planned | G2/G4/G8 |
-| exec-04 | Sandbox and environment | `src/settings.rs`, `src/ui.rs` | planned | G7/G8 |
+| exec-04 | Sandbox and environment | `src/model.rs`, `src/state.rs`, `src/ui.rs` | planned | G7/G8 |
 | data-01 | Durable state | `src/persistence.rs` | planned | G2/G5 |
 | data-02 | Import/export boundaries | `src/persistence.rs`, `scripts/check-safety.mjs` | planned | G5/G10 |
 | collab-01 | Share and review | `src/ui.rs`, `src/protocol.rs` | planned | G8/G9 |
 | collab-02 | Threads/tasks | `src/state.rs`, `src/protocol.rs`, `src/ui.rs` | planned | G2/G4/G8 |
-| nav-01 | Settings | `src/settings.rs`, `src/ui.rs` | planned | G7/G8 |
-| nav-02 | Top-level destinations | `src/ui.rs`, `src/settings.rs` | planned | G7/G8 |
+| nav-01 | Settings | `src/model.rs`, `src/state.rs`, `src/ui.rs` | planned | G7/G8 |
+| nav-02 | Top-level destinations | `src/state.rs`, `src/ui.rs` | planned | G7/G8 |
 | runtime-01 | Headless runtime | `src/main.rs`, `scripts/` | planned | G6 |
 | runtime-02 | Native runtime | `src/main.rs`, `src/ui.rs` | planned | G7/G8 |
 | runtime-03 | Reference integration | `src/protocol.rs`, `scripts/` | planned | G9 |

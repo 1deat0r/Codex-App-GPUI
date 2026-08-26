@@ -27,13 +27,13 @@ Status vocabulary:
 | exec-01 | App-server connection | Initialize, capabilities, thread list/read/start, turn start/steer/interrupt, notifications | `src/protocol.rs` | planned | G4/G9 |
 | exec-02 | Tool execution | Command, patch, file, search, web, MCP, code-mode, terminal activity cards | `src/model.rs`, `src/ui.rs` | planned | G2/G7 |
 | exec-03 | Approvals | Pending approval card, approve/deny, explanation, safe default, audit event | `src/state.rs`, `src/protocol.rs`, `src/ui.rs` | planned | G2/G4/G8 |
-| exec-04 | Sandbox and environment | Approval policy, sandbox policy, working directory, model provider, environment summary | `src/settings.rs`, `src/ui.rs` | planned | G7/G8 |
+| exec-04 | Sandbox and environment | Approval policy, sandbox policy, working directory, model provider, environment summary | `src/model.rs`, `src/state.rs`, `src/ui.rs` | planned | G7/G8 |
 | data-01 | Durable state | Config, recent tasks, transcript cache, drafts, selected project/task | `src/persistence.rs` | planned | G2/G5 |
 | data-02 | Import/export boundaries | No secret logging; safe path handling; user data remains in Codex-defined locations | `src/persistence.rs`, `scripts/check-safety.mjs` | planned | G5/G10 |
 | collab-01 | Share and review | Share task, review changes, diff/commit affordances, open path actions | `src/ui.rs`, `src/protocol.rs` | planned | G8/G9 |
 | collab-02 | Threads/tasks | Fork, resume, archive, delete, pin, rename, handoff metadata | `src/state.rs`, `src/protocol.rs`, `src/ui.rs` | planned | G2/G4/G8 |
-| nav-01 | Settings | General, account, appearance, notifications, apps/connectors, MCP, skills, plugins, keybindings, worktrees | `src/settings.rs`, `src/ui.rs` | planned | G7/G8 |
-| nav-02 | Top-level destinations | Pull requests, Sites, Scheduled, Plugins, worktree/project onboarding | `src/ui.rs`, `src/settings.rs` | planned | G7/G8 |
+| nav-01 | Settings | General, account, appearance, notifications, apps/connectors, MCP, skills, plugins, keybindings, worktrees | `src/model.rs`, `src/state.rs`, `src/ui.rs` | planned | G7/G8 |
+| nav-02 | Top-level destinations | Pull requests, Sites, Scheduled, Plugins, worktree/project onboarding | `src/state.rs`, `src/ui.rs` | planned | G7/G8 |
 | runtime-01 | Headless runtime | Deterministic smoke output and clean shutdown | `src/main.rs`, `scripts/` | planned | G6 |
 | runtime-02 | Native runtime | Real GPUI window on Linux with mouse/keyboard input and no panic on exit | `src/main.rs`, `src/ui.rs` | planned | G7/G8 |
 | runtime-03 | Reference integration | Real local app-server round trip with reference user data preserved | `src/protocol.rs`, `scripts/` | planned | G9 |

@@ -1,0 +1,681 @@
+//! UI state and interaction reducer for the native client.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use gpui::{AsyncApp, Context, FocusHandle, KeyDownEvent, WeakEntity, Window};
+
+use crate::model::{ChildTask, Entry, PlanStep, Project, Route, Settings, SettingsPage, Task, Workspace};
+use crate::persistence::{self, Snapshot};
+use crate::protocol::{AppServerClient, ServerThread};
+
+pub const MODEL_OPTIONS: &[&str] = &["5.6 Luna Max", "5.6 Sol", "5.5", "5.4 Mini"];
+pub const REASONING_OPTIONS: &[&str] = &["auto", "low", "high", "max"];
+pub const COMPOSER_MODES: &[&str] = &["Agent", "Chat", "Ask"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionState {
+    Demo,
+    Connecting,
+    Live,
+    Offline,
+}
+
+impl ConnectionState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Demo => "Demo data",
+            Self::Connecting => "Connecting…",
+            Self::Live => "Connected to Codex",
+            Self::Offline => "Offline",
+        }
+    }
+}
+
+pub struct AppState {
+    pub workspace: Workspace,
+    pub settings: Settings,
+    pub selected_project: String,
+    pub selected_task: String,
+    pub route: Route,
+    pub settings_page: SettingsPage,
+    pub query: String,
+    pub draft: String,
+    pub caret: usize,
+    pub streaming: bool,
+    pub busy: bool,
+    pub composer_mode: String,
+    pub attachments: Vec<String>,
+    pub menu_open: bool,
+    pub sidebar_collapsed: bool,
+    pub search_open: bool,
+    pub toast: Option<String>,
+    pub connection: ConnectionState,
+    pub live_client: Option<Arc<AppServerClient>>,
+    pub input_focus: FocusHandle,
+    pub search_focus: FocusHandle,
+}
+
+impl AppState {
+    pub fn new(snapshot: Snapshot, cx: &mut Context<Self>) -> Self {
+        let mut state = Self {
+            workspace: snapshot.workspace,
+            settings: snapshot.settings,
+            selected_project: snapshot.selected_project,
+            selected_task: snapshot.selected_task,
+            route: Route::Task,
+            settings_page: SettingsPage::General,
+            query: String::new(),
+            draft: String::new(),
+            caret: 0,
+            streaming: false,
+            busy: false,
+            composer_mode: "Agent".into(),
+            attachments: Vec::new(),
+            menu_open: false,
+            sidebar_collapsed: false,
+            search_open: false,
+            toast: None,
+            connection: ConnectionState::Demo,
+            live_client: None,
+            input_focus: cx.focus_handle(),
+            search_focus: cx.focus_handle(),
+        };
+        state.ensure_selection();
+        state
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            workspace: self.workspace.clone(),
+            settings: self.settings.clone(),
+            selected_project: self.selected_project.clone(),
+            selected_task: self.selected_task.clone(),
+        }
+    }
+
+    pub fn init(&mut self, cx: &mut Context<Self>) {
+        let command = std::env::var("CODEX_APP_SERVER_COMMAND").ok().filter(|value| !value.trim().is_empty());
+        let Some(command) = command else {
+            return;
+        };
+        self.connection = ConnectionState::Connecting;
+        let async_cx = cx.to_async();
+        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+            let result = async_cx
+                .background_executor()
+                .spawn(async move { smol::unblock(move || connect_live(&command)).await })
+                .await;
+            let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                Ok((client, threads)) => {
+                    this.connection = ConnectionState::Live;
+                    this.live_client = Some(client);
+                    this.import_live_threads(threads);
+                    this.notify_success("Connected to the local Codex app-server", cx);
+                }
+                Err(error) => {
+                    this.connection = ConnectionState::Offline;
+                    this.fail(&format!("Could not connect to app-server: {error}"), cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn current_task(&self) -> Option<&Task> {
+        self.workspace.task(&self.selected_project, &self.selected_task)
+    }
+
+    pub fn current_task_mut(&mut self) -> Option<&mut Task> {
+        self.workspace.task_mut(&self.selected_project, &self.selected_task)
+    }
+
+    pub fn current_project(&self) -> Option<&Project> {
+        self.workspace.projects.iter().find(|project| project.id == self.selected_project)
+    }
+
+    pub fn visible_tasks<'a>(&'a self, project: &'a Project) -> impl Iterator<Item = &'a Task> {
+        let query = self.query.trim().to_lowercase();
+        project.tasks.iter().filter(move |task| {
+            !task.archived
+                && (query.is_empty()
+                    || task.title.to_lowercase().contains(&query)
+                    || project.name.to_lowercase().contains(&query))
+        })
+    }
+
+    pub fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
+        self.query = query;
+        cx.notify();
+    }
+
+    pub fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_open = !self.search_open;
+        if self.search_open {
+            window.focus(&self.search_focus);
+        } else {
+            self.query.clear();
+        }
+        cx.notify();
+    }
+
+    pub fn select_task(&mut self, project_id: String, task_id: String, cx: &mut Context<Self>) {
+        self.selected_project = project_id;
+        self.selected_task = task_id;
+        self.route = Route::Task;
+        self.draft.clear();
+        self.caret = 0;
+        self.attachments.clear();
+        self.menu_open = false;
+        self.streaming = self.current_task().map(|task| task.status == "running").unwrap_or(false);
+        self.persist(cx);
+        cx.notify();
+    }
+
+    pub fn create_task(&mut self, cx: &mut Context<Self>) {
+        let project_id = self.selected_project.clone();
+        let Some(project) = self.current_project().cloned() else {
+            return;
+        };
+        let id = format!("local-task-{}", self.workspace.all_tasks().count() + 1);
+        let task = Task {
+            id: id.clone(),
+            title: "New task".into(),
+            project_id: project_id.clone(),
+            status: "idle".into(),
+            path: project.path,
+            branch: None,
+            model: self.settings.default_model.clone(),
+            reasoning: self.settings.default_reasoning.clone(),
+            updated_at: "Now".into(),
+            archived: false,
+            pinned: false,
+            entries: Vec::new(),
+            plan: Vec::new(),
+            usage: Default::default(),
+            children: Vec::new(),
+        };
+        if let Some(project) = self.workspace.projects.iter_mut().find(|project| project.id == project_id) {
+            project.tasks.insert(0, task);
+        }
+        self.select_task(project_id, id, cx);
+        self.notify_success("New task", cx);
+    }
+
+    pub fn create_live_task(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.live_client.clone() else {
+            self.create_task(cx);
+            return;
+        };
+        let cwd = self.current_project().map(|project| project.path.clone());
+        let async_cx = cx.to_async();
+        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+            let result = async_cx
+                .background_executor()
+                .spawn(async move { smol::unblock(move || client.thread_start(cwd.as_deref())).await })
+                .await;
+            let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                Ok(value) => {
+                    if let Some(thread) = value.get("thread").and_then(ServerThread::from_value) {
+                        this.add_server_thread(thread.clone());
+                        this.select_task("live-codex".into(), thread.id, cx);
+                    } else {
+                        this.create_task(cx);
+                    }
+                }
+                Err(error) => this.fail(&format!("New task failed: {error}"), cx),
+            });
+        })
+        .detach();
+    }
+
+    pub fn set_route(&mut self, route: Route, cx: &mut Context<Self>) {
+        self.route = route;
+        self.menu_open = false;
+        cx.notify();
+    }
+
+    pub fn open_settings(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        self.settings_page = page;
+        self.route = Route::Settings;
+        self.menu_open = false;
+        cx.notify();
+    }
+
+    pub fn select_settings_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        self.settings_page = page;
+        cx.notify();
+    }
+
+    pub fn toggle_project(&mut self, project_id: String, cx: &mut Context<Self>) {
+        if let Some(project) = self.workspace.projects.iter_mut().find(|project| project.id == project_id) {
+            project.collapsed = !project.collapsed;
+        }
+        cx.notify();
+    }
+
+    pub fn send(&mut self, cx: &mut Context<Self>) {
+        let text = self.draft.trim().to_string();
+        if text.is_empty() || self.streaming || self.busy {
+            return;
+        }
+        let project_id = self.selected_project.clone();
+        let task_id = self.selected_task.clone();
+        let Some(task) = self.workspace.task_mut(&project_id, &task_id) else {
+            return;
+        };
+        task.entries.push(Entry::User {
+            id: format!("user-{}", task.entries.len() + 1),
+            text: text.clone(),
+            time: "Now".into(),
+        });
+        task.status = "running".into();
+        task.updated_at = "Now".into();
+        self.draft.clear();
+        self.caret = 0;
+        self.busy = false;
+        self.streaming = true;
+        self.attachments.clear();
+        self.persist(cx);
+
+        if let Some(client) = self.live_client.clone() {
+            let async_cx = cx.to_async();
+            cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move { smol::unblock(move || client.turn_start(&task_id, &text)).await })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| {
+                    if let Err(error) = result {
+                        this.fail(&format!("Turn failed: {error}"), cx);
+                    } else {
+                        this.notify_success("Turn started", cx);
+                    }
+                });
+            })
+            .detach();
+        } else {
+            let async_cx = cx.to_async();
+            cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                smol::Timer::after(Duration::from_millis(900)).await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| {
+                    if this.selected_task == task_id {
+                        if let Some(task) = this.workspace.task_mut(&project_id, &task_id) {
+                            task.entries.push(Entry::Assistant {
+                                id: format!("assistant-{}", task.entries.len() + 1),
+                                text: "I’m ready to continue this task. Connect `CODEX_APP_SERVER_COMMAND` to stream a live Codex turn here.".into(),
+                                time: "Now".into(),
+                            });
+                            task.status = "idle".into();
+                            task.usage.input += 18;
+                            task.usage.output += 24;
+                        }
+                        this.streaming = false;
+                        this.persist(cx);
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    pub fn stop_turn(&mut self, cx: &mut Context<Self>) {
+        if !self.streaming {
+            return;
+        }
+        let task_id = self.selected_task.clone();
+        self.streaming = false;
+        if let Some(task) = self.current_task_mut() {
+            task.status = "idle".into();
+            task.entries.push(Entry::System { id: format!("stop-{}", task.entries.len()), text: "Turn interrupted".into() });
+        }
+        if let Some(client) = self.live_client.clone() {
+            cx.spawn(move |_this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let _ = smol::unblock(move || client.turn_interrupt(&task_id, "current")).await;
+            })
+            .detach();
+        }
+        self.notify_success("Turn stopped", cx);
+    }
+
+    pub fn continue_turn(&mut self, cx: &mut Context<Self>) {
+        if self.streaming {
+            return;
+        }
+        if let Some(task) = self.current_task_mut() {
+            task.status = "running".into();
+            task.entries.push(Entry::System { id: format!("continue-{}", task.entries.len()), text: "Continuing the turn".into() });
+        }
+        self.streaming = true;
+        self.notify_success("Continuing", cx);
+    }
+
+    pub fn cycle_model(&mut self, cx: &mut Context<Self>) {
+        let current = self.current_task().map(|task| task.model.clone()).unwrap_or_default();
+        let pos = MODEL_OPTIONS.iter().position(|model| *model == current).unwrap_or(0);
+        let next = MODEL_OPTIONS[(pos + 1) % MODEL_OPTIONS.len()].to_string();
+        if let Some(task) = self.current_task_mut() {
+            task.model = next.clone();
+        }
+        self.settings.default_model = next.clone();
+        self.notify_success(&format!("Model: {next}"), cx);
+    }
+
+    pub fn cycle_reasoning(&mut self, cx: &mut Context<Self>) {
+        let current = self.current_task().map(|task| task.reasoning.clone()).unwrap_or_else(|| "auto".into());
+        let pos = REASONING_OPTIONS.iter().position(|level| *level == current).unwrap_or(0);
+        let next = REASONING_OPTIONS[(pos + 1) % REASONING_OPTIONS.len()].to_string();
+        if let Some(task) = self.current_task_mut() {
+            task.reasoning = next.clone();
+        }
+        self.settings.default_reasoning = next.clone();
+        self.notify_success(&format!("Reasoning: {next}"), cx);
+    }
+
+    pub fn cycle_mode(&mut self, cx: &mut Context<Self>) {
+        let pos = COMPOSER_MODES.iter().position(|mode| *mode == self.composer_mode).unwrap_or(0);
+        self.composer_mode = COMPOSER_MODES[(pos + 1) % COMPOSER_MODES.len()].into();
+        let mode = self.composer_mode.clone();
+        self.notify_success(&format!("Mode: {mode}"), cx);
+    }
+
+    pub fn add_attachment(&mut self, cx: &mut Context<Self>) {
+        self.attachments.push("attachment".into());
+        self.notify_success("Attachment staged", cx);
+    }
+
+    pub fn insert_mention(&mut self, cx: &mut Context<Self>) {
+        insert_at(&mut self.draft, &mut self.caret, '@');
+        cx.notify();
+    }
+
+    pub fn share_current(&mut self, cx: &mut Context<Self>) {
+        self.notify_success("Share link copied", cx);
+    }
+
+    pub fn toggle_menu(&mut self, cx: &mut Context<Self>) {
+        self.menu_open = !self.menu_open;
+        cx.notify();
+    }
+
+    pub fn archive_current(&mut self, cx: &mut Context<Self>) {
+        let task_id = self.selected_task.clone();
+        if let Some(task) = self.current_task_mut() {
+            task.archived = true;
+            task.status = "archived".into();
+        }
+        self.ensure_selection();
+        self.persist(cx);
+        self.notify_success(&format!("Archived {task_id}"), cx);
+    }
+
+    pub fn delete_current(&mut self, cx: &mut Context<Self>) {
+        let project_id = self.selected_project.clone();
+        let task_id = self.selected_task.clone();
+        if let Some(project) = self.workspace.projects.iter_mut().find(|project| project.id == project_id) {
+            project.tasks.retain(|task| task.id != task_id);
+        }
+        self.ensure_selection();
+        self.persist(cx);
+        self.notify_success("Task deleted", cx);
+    }
+
+    pub fn approve_current(&mut self, approved: bool, cx: &mut Context<Self>) {
+        if let Some(task) = self.current_task_mut() {
+            let label = if approved { "Approved" } else { "Declined" };
+            for entry in &mut task.entries {
+                if let Entry::Approval { requested, .. } = entry {
+                    *requested = false;
+                }
+            }
+            task.entries.push(Entry::System { id: format!("approval-{}", task.entries.len()), text: format!("{label} by user") });
+        }
+        self.notify_success(if approved { "Approval accepted" } else { "Approval declined" }, cx);
+    }
+
+    pub fn toggle_bool_setting(&mut self, setting: &str, cx: &mut Context<Self>) {
+        match setting {
+            "notifications" => self.settings.notifications = !self.settings.notifications,
+            "sound" => self.settings.sound_effects = !self.settings.sound_effects,
+            _ => {}
+        }
+        self.persist(cx);
+        cx.notify();
+    }
+
+    pub fn handle_input_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = &event.keystroke;
+        if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
+            return;
+        }
+        let action = apply_input_edit(&mut self.draft, &mut self.caret, &key.key, key.key_char.as_deref(), key.modifiers.shift, self.streaming);
+        if action == InputAction::Send {
+            self.send(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    pub fn handle_search_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = &event.keystroke;
+        if key.key == "escape" {
+            self.search_open = false;
+            self.query.clear();
+            cx.notify();
+            return;
+        }
+        if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
+            return;
+        }
+        let _ = apply_input_edit(&mut self.query, &mut self.caret, &key.key, key.key_char.as_deref(), key.modifiers.shift, false);
+        if key.key == "enter" {
+            window.focus(&self.search_focus);
+        }
+        cx.notify();
+    }
+
+    fn ensure_selection(&mut self) {
+        let selected_exists = self.workspace.task(&self.selected_project, &self.selected_task).is_some();
+        if selected_exists {
+            return;
+        }
+        if let Some((project, task)) = self.workspace.all_tasks().find(|(_, task)| !task.archived) {
+            self.selected_project = project.id.clone();
+            self.selected_task = task.id.clone();
+        }
+    }
+
+    fn persist(&self, _cx: &mut Context<Self>) {
+        let _ = persistence::save(&self.snapshot());
+    }
+
+    pub fn notify_success(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.toast = Some(message.into());
+        self.clear_toast_later(cx);
+        cx.notify();
+    }
+
+    fn fail(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.toast = Some(message.into());
+        self.clear_toast_later(cx);
+        cx.notify();
+    }
+
+    fn clear_toast_later(&mut self, cx: &mut Context<Self>) {
+        let async_cx = cx.to_async();
+        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+            smol::Timer::after(Duration::from_secs(4)).await;
+            let _ = this.update(&mut async_cx.clone(), |this, cx| {
+                this.toast = None;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn import_live_threads(&mut self, threads: Vec<ServerThread>) {
+        if threads.is_empty() {
+            return;
+        }
+        self.workspace.projects.retain(|project| project.id == "codex-app-gpui");
+        let mut live = Project {
+            id: "live-codex".into(),
+            name: "Live Codex".into(),
+            path: threads.first().map(|thread| thread.cwd.clone()).unwrap_or_default(),
+            collapsed: false,
+            tasks: Vec::new(),
+        };
+        for thread in threads {
+            live.tasks.push(task_from_server(&thread));
+        }
+        self.workspace.projects.insert(0, live);
+        if let Some(task) = self.workspace.projects.first().and_then(|project| project.tasks.first()) {
+            self.selected_project = "live-codex".into();
+            self.selected_task = task.id.clone();
+        }
+    }
+
+    fn add_server_thread(&mut self, thread: ServerThread) {
+        if !self.workspace.projects.iter().any(|project| project.id == "live-codex") {
+            self.workspace.projects.insert(0, Project { id: "live-codex".into(), name: "Live Codex".into(), path: thread.cwd.clone(), collapsed: false, tasks: Vec::new() });
+        }
+        if let Some(project) = self.workspace.projects.iter_mut().find(|project| project.id == "live-codex") {
+            project.tasks.insert(0, task_from_server(&thread));
+        }
+    }
+}
+
+fn connect_live(command: &str) -> anyhow::Result<(Arc<AppServerClient>, Vec<ServerThread>)> {
+    let client = Arc::new(AppServerClient::spawn(command)?);
+    client.initialize()?;
+    let threads = client.thread_list(None)?;
+    Ok((client, threads))
+}
+
+fn task_from_server(thread: &ServerThread) -> Task {
+    Task {
+        id: thread.id.clone(),
+        title: thread.title.clone(),
+        project_id: "live-codex".into(),
+        status: thread.status.clone(),
+        path: thread.cwd.clone(),
+        branch: None,
+        model: if thread.model.is_empty() { "5.6 Luna Max".into() } else { thread.model.clone() },
+        reasoning: "auto".into(),
+        updated_at: if thread.updated_at.is_empty() { "Live".into() } else { thread.updated_at.clone() },
+        archived: false,
+        pinned: false,
+        entries: vec![Entry::System { id: format!("system-{}", thread.id), text: "Connected to Codex app-server. Select this task to continue.".into() }],
+        plan: Vec::new(),
+        usage: Default::default(),
+        children: Vec::new(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputAction {
+    None,
+    Send,
+}
+
+pub fn apply_input_edit(draft: &mut String, caret: &mut usize, key: &str, key_char: Option<&str>, shift: bool, streaming: bool) -> InputAction {
+    if streaming {
+        return InputAction::None;
+    }
+    let len = draft.chars().count();
+    *caret = (*caret).min(len);
+    match key {
+        "enter" if shift => insert_at(draft, caret, '\n'),
+        "enter" => return InputAction::Send,
+        "backspace" => {
+            if *caret > 0 {
+                *caret -= 1;
+                let byte = char_byte_index(draft, *caret);
+                draft.remove(byte);
+            }
+        }
+        "delete" => {
+            if *caret < len {
+                let byte = char_byte_index(draft, *caret);
+                draft.remove(byte);
+            }
+        }
+        "space" => insert_at(draft, caret, ' '),
+        "tab" => insert_at(draft, caret, '\t'),
+        "left" => *caret = caret.saturating_sub(1),
+        "right" => *caret = (*caret + 1).min(len),
+        "home" => *caret = 0,
+        "end" => *caret = len,
+        _ => {
+            if let Some(chars) = key_char {
+                for ch in chars.chars() {
+                    insert_at(draft, caret, ch);
+                }
+            }
+        }
+    }
+    InputAction::None
+}
+
+fn char_byte_index(s: &str, n: usize) -> usize {
+    s.char_indices().nth(n).map(|(index, _)| index).unwrap_or(s.len())
+}
+
+fn insert_at(s: &mut String, caret: &mut usize, character: char) {
+    let byte = char_byte_index(s, *caret);
+    s.insert(byte, character);
+    *caret += 1;
+}
+
+pub fn format_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+pub fn plan_progress(plan: &[PlanStep]) -> (usize, usize) {
+    let complete = plan.iter().filter(|step| step.status == "complete").count();
+    (complete, plan.len())
+}
+
+pub fn child_status_counts(children: &[ChildTask]) -> (usize, usize) {
+    let running = children.iter().filter(|child| child.status == "running").count();
+    (running, children.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_supports_unicode_and_newline_semantics() {
+        let mut draft = "hé".to_string();
+        let mut caret = 2;
+        assert_eq!(apply_input_edit(&mut draft, &mut caret, "space", None, false, false), InputAction::None);
+        assert_eq!(draft, "hé ");
+        assert_eq!(apply_input_edit(&mut draft, &mut caret, "enter", None, true, false), InputAction::None);
+        assert_eq!(draft, "hé \n");
+        assert_eq!(apply_input_edit(&mut draft, &mut caret, "enter", None, false, false), InputAction::Send);
+    }
+
+    #[test]
+    fn streaming_blocks_editor_mutations() {
+        let mut draft = "hello".to_string();
+        let mut caret = 5;
+        assert_eq!(apply_input_edit(&mut draft, &mut caret, "x", Some("x"), false, true), InputAction::None);
+        assert_eq!(draft, "hello");
+    }
+
+    #[test]
+    fn formatting_and_progress_are_compact() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(1_250), "1.2k");
+        assert_eq!(plan_progress(&[PlanStep { label: "a".into(), status: "complete".into() }]), (1, 1));
+    }
+}
