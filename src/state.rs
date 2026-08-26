@@ -50,6 +50,7 @@ pub struct AppState {
     pub composer_mode: String,
     pub attachments: Vec<String>,
     pub menu_open: bool,
+    pub view_open: bool,
     pub sidebar_collapsed: bool,
     pub search_open: bool,
     pub toast: Option<String>,
@@ -83,6 +84,7 @@ impl AppState {
             composer_mode: "Agent".into(),
             attachments: Vec::new(),
             menu_open: false,
+            view_open: false,
             sidebar_collapsed: false,
             search_open: false,
             toast: None,
@@ -566,6 +568,7 @@ impl AppState {
         self.caret = 0;
         self.attachments.clear();
         self.menu_open = false;
+        self.view_open = false;
         self.rename_open = false;
         self.rename_draft.clear();
         self.streaming = self
@@ -649,6 +652,7 @@ impl AppState {
     pub fn set_route(&mut self, route: Route, cx: &mut Context<Self>) {
         self.route = route;
         self.menu_open = false;
+        self.view_open = false;
         self.rename_open = false;
         cx.notify();
     }
@@ -657,6 +661,7 @@ impl AppState {
         self.settings_page = page;
         self.route = Route::Settings;
         self.menu_open = false;
+        self.view_open = false;
         cx.notify();
     }
 
@@ -974,6 +979,19 @@ impl AppState {
 
     pub fn toggle_menu(&mut self, cx: &mut Context<Self>) {
         self.menu_open = !self.menu_open;
+        self.view_open = false;
+        cx.notify();
+    }
+
+    pub fn toggle_view_options(&mut self, cx: &mut Context<Self>) {
+        self.view_open = !self.view_open;
+        self.menu_open = false;
+        cx.notify();
+    }
+
+    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
+        self.view_open = false;
         cx.notify();
     }
 
@@ -1174,6 +1192,9 @@ impl AppState {
                 self.cancel_rename(cx);
             } else if self.menu_open {
                 self.menu_open = false;
+                cx.notify();
+            } else if self.view_open {
+                self.view_open = false;
                 cx.notify();
             } else if self.search_open {
                 self.search_open = false;

@@ -31,6 +31,7 @@ pub const USER_BUBBLE: gpui::Rgba = color(0x303030);
 pub const CODE_BG: gpui::Rgba = color(0x111111);
 
 pub const SIDEBAR_WIDTH: f32 = 318.0;
+pub const SIDEBAR_COLLAPSED_WIDTH: f32 = 58.0;
 pub const CONTENT_MAX_WIDTH: f32 = 900.0;
 pub const COMPOSER_MAX_WIDTH: f32 = 860.0;
 

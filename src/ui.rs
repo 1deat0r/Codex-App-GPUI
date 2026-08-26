@@ -76,6 +76,18 @@ fn menu_bar() -> Stateful<Div> {
 }
 
 fn sidebar(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
+    if state.sidebar_collapsed {
+        compact_sidebar(state, window, cx)
+    } else {
+        expanded_sidebar(state, window, cx)
+    }
+}
+
+fn expanded_sidebar(
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
     div()
         .id("sidebar")
         .w(px(theme::SIDEBAR_WIDTH))
@@ -226,6 +238,148 @@ fn sidebar(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) ->
                 .children((state.query.trim().is_empty()).then(|| recent_tasks(state, window, cx))),
         )
         .child(account_footer(state, window, cx))
+}
+
+fn compact_sidebar(
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
+    div()
+        .id("sidebar-compact")
+        .w(px(theme::SIDEBAR_COLLAPSED_WIDTH))
+        .h_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .bg(theme::BG_SIDEBAR)
+        .border_r_1()
+        .border_color(theme::BORDER)
+        .px_2()
+        .py_2()
+        .gap_1()
+        .child(icon_button(
+            "sidebar-expand",
+            "C",
+            "Expand sidebar",
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.toggle_sidebar(cx);
+            }),
+        ))
+        .child(icon_button(
+            "compact-search",
+            "⌕",
+            "Search tasks",
+            window.listener_for(&cx.entity(), |this, _event, window, cx| {
+                this.toggle_search(window, cx);
+            }),
+        ))
+        .child(icon_button(
+            "compact-new-chat",
+            "✎",
+            "New chat",
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.create_live_task(cx);
+            }),
+        ))
+        .child(icon_button(
+            "compact-pull-requests",
+            "⌘",
+            "Pull requests",
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.set_route(Route::PullRequests, cx);
+            }),
+        ))
+        .child(icon_button(
+            "compact-sites",
+            "⊞",
+            "Sites",
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.set_route(Route::Sites, cx);
+            }),
+        ))
+        .child(icon_button(
+            "compact-scheduled",
+            "◷",
+            "Scheduled",
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.set_route(Route::Scheduled, cx);
+            }),
+        ))
+        .child(icon_button(
+            "compact-plugins",
+            "◉",
+            "Plugins",
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.set_route(Route::Plugins, cx);
+            }),
+        ))
+        .child(
+            div()
+                .id("compact-task-list")
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_1()
+                .mt_2()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .children(
+                    state
+                        .workspace
+                        .all_tasks()
+                        .filter(|(_, task)| !task.archived)
+                        .take(24)
+                        .map(|(project, task)| {
+                            let project_id = project.id.clone();
+                            let task_id = task.id.clone();
+                            let active = state.selected_task == task.id;
+                            div()
+                                .id(ElementId::Name(format!("compact-task-{}", task.id).into()))
+                                .size_7()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .bg(if active {
+                                    Hsla::from(theme::BG_SELECTED)
+                                } else {
+                                    gpui::transparent_black()
+                                })
+                                .child(div().size_2().rounded_full().bg(
+                                    if task.status == "running" {
+                                        theme::ACCENT
+                                    } else {
+                                        theme::TEXT_FAINT
+                                    },
+                                ))
+                                .on_click(window.listener_for(
+                                    &cx.entity(),
+                                    move |this, _event, _window, cx| {
+                                        this.select_task(project_id.clone(), task_id.clone(), cx);
+                                    },
+                                ))
+                                .hover(|style| style.bg(theme::BG_HOVER))
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .id("compact-account-footer")
+                .border_t_1()
+                .border_color(theme::BORDER)
+                .pt_2()
+                .child(icon_button(
+                    "compact-account",
+                    "MU",
+                    "Account",
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.open_settings(SettingsPage::Account, cx);
+                    }),
+                )),
+        )
 }
 
 fn search_box(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
@@ -624,7 +778,7 @@ fn thread_header(
             "☷",
             "View options",
             window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                this.notify_success("View options", cx);
+                this.toggle_view_options(cx);
             }),
         ))
         .child(icon_button(
@@ -635,7 +789,57 @@ fn thread_header(
                 this.toggle_menu(cx);
             }),
         ))
+        .children(state.view_open.then(|| view_menu(state, window, cx)))
         .children(state.menu_open.then(|| header_menu(state, window, cx)))
+}
+
+fn view_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
+    div()
+        .id("view-menu-popover")
+        .absolute()
+        .top(px(42.0))
+        .right(px(48.0))
+        .w(px(210.0))
+        .flex()
+        .flex_col()
+        .gap_1()
+        .p_1()
+        .bg(theme::BG_SURFACE_2)
+        .border_1()
+        .border_color(theme::BORDER)
+        .rounded_lg()
+        .shadow_lg()
+        .children([
+            menu_action(
+                "view-toggle-sidebar",
+                if state.sidebar_collapsed {
+                    "Expand sidebar"
+                } else {
+                    "Collapse sidebar"
+                },
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.toggle_sidebar(cx);
+                }),
+            ),
+            menu_action(
+                "view-search",
+                "Search tasks",
+                window.listener_for(&cx.entity(), |this, _event, window, cx| {
+                    this.toggle_search(window, cx);
+                }),
+            ),
+            menu_action(
+                "view-reset",
+                "Reset view",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    if this.sidebar_collapsed {
+                        this.sidebar_collapsed = false;
+                    }
+                    this.view_open = false;
+                    cx.notify();
+                }),
+            ),
+        ])
 }
 
 fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
