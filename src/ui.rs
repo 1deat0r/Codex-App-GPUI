@@ -599,7 +599,9 @@ fn search_box(state: &AppState, window: &mut Window, cx: &mut Context<AppState>)
                 )
                 .on_key_down(
                     window.listener_for(&cx.entity(), |this, event, window, cx| {
-                        this.handle_search_key(event, window, cx);
+                        if this.handle_search_key(event, window, cx) {
+                            cx.stop_propagation();
+                        }
                     }),
                 ),
         )
@@ -904,8 +906,8 @@ fn thread_header(
                 }),
             )
             .on_key_down(
-                window.listener_for(&cx.entity(), |this, event, _window, cx| {
-                    this.handle_rename_key(event, cx);
+                window.listener_for(&cx.entity(), |this, event, window, cx| {
+                    this.handle_rename_key(event, window, cx);
                 }),
             )
     } else {
@@ -1603,7 +1605,9 @@ fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                     )
                     .on_key_down(
                         window.listener_for(&cx.entity(), |this, event, window, cx| {
-                            this.handle_input_key(event, window, cx);
+                            if this.handle_input_key(event, window, cx) {
+                                cx.stop_propagation();
+                            }
                         }),
                     ),
             )
@@ -2074,7 +2078,25 @@ fn settings_page_body(
             ))
             .child(setting_row("⌘ ⇧ B", "Toggle sidebar", "⌘ ⇧ B".into(), None))
             .child(setting_row("F2", "Rename current task", "F2".into(), None))
-            .child(setting_row("⌘ N", "Create a new task", "⌘ N".into(), None)),
+            .child(setting_row("⌘ N", "Create a new task", "⌘ N".into(), None))
+            .child(setting_row(
+                "⌘ ⇧ M/R",
+                "Cycle model/reasoning",
+                "⌘ ⇧ M/R".into(),
+                None,
+            ))
+            .child(setting_row(
+                "⌘ ⇧ E/F",
+                "Attach or mention",
+                "⌘ ⇧ E/F".into(),
+                None,
+            ))
+            .child(setting_row(
+                "⌘ ⇧ X/Z",
+                "Stop or archive",
+                "⌘ ⇧ X/Z".into(),
+                None,
+            )),
         SettingsPage::Worktrees => div()
             .flex()
             .flex_col()

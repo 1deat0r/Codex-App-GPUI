@@ -53,6 +53,12 @@ CODEX_APP_SERVER_COMMAND='codex app-server --stdio' node scripts/run-cargo.mjs r
 
 For isolated live-window validation, `CODEX_APP_GPUI_CREATE_LIVE_THREAD=1` asks the client to create an empty server-owned thread when the isolated `CODEX_HOME` has no history. Keep `CODEX_HOME` pointed at a temporary directory for that check so the reference desktop's user data is not changed.
 
+For a deterministic native-flow exercise without network or model usage, use the repository-owned fixture server:
+
+```sh
+CODEX_APP_SERVER_COMMAND='node scripts/live-fixture-server.mjs' CODEX_APP_GPUI_CREATE_LIVE_THREAD=1 node scripts/run-cargo.mjs run --locked
+```
+
 ## Verification
 
 ```sh

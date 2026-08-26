@@ -950,10 +950,11 @@ impl AppState {
         cx.notify();
     }
 
-    pub fn commit_rename(&mut self, cx: &mut Context<Self>) {
+    pub fn commit_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.rename_draft.trim().to_string();
         if name.is_empty() {
             self.cancel_rename(cx);
+            window.focus(&self.input_focus);
             return;
         }
         let thread_id = self.selected_task.clone();
@@ -965,6 +966,7 @@ impl AppState {
         self.rename_open = false;
         self.rename_draft.clear();
         self.rename_caret = 0;
+        window.focus(&self.input_focus);
         self.persist(cx);
         if live {
             if let Some(client) = self.live_client.clone() {
@@ -1196,23 +1198,17 @@ impl AppState {
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let key = &event.keystroke;
         if key.key == "f2" {
             self.begin_rename(window, cx);
-            return;
+            return true;
         }
-        let command = key.modifiers.platform || key.modifiers.control;
-        if command && key.key == "k" {
-            self.toggle_search(window, cx);
-            return;
-        }
-        if command && key.key == "n" {
-            self.create_live_task(cx);
-            return;
+        if self.handle_command_shortcut(key, window, cx) {
+            return true;
         }
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
-            return;
+            return false;
         }
         let action = apply_input_edit(
             &mut self.draft,
@@ -1227,6 +1223,7 @@ impl AppState {
         } else {
             cx.notify();
         }
+        false
     }
 
     pub fn handle_global_key(
@@ -1255,16 +1252,43 @@ impl AppState {
             }
             return;
         }
-        let command = key.modifiers.platform || key.modifiers.control;
-        if command && key.key == "k" {
-            self.toggle_search(window, cx);
-        } else if command && key.key == "n" {
-            self.create_live_task(cx);
-        } else if command && key.modifiers.shift && key.key == "b" {
-            self.toggle_sidebar(cx);
-        } else if key.key == "f2" && self.route == Route::Task {
+        if self.handle_command_shortcut(key, window, cx) {
+            return;
+        }
+        if key.key == "f2" && self.route == Route::Task {
             self.begin_rename(window, cx);
         }
+    }
+
+    fn handle_command_shortcut(
+        &mut self,
+        key: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let command = key.modifiers.platform || key.modifiers.control;
+        if !command {
+            return false;
+        }
+        match (key.modifiers.shift, key.key.as_str()) {
+            (false, "k") => self.toggle_search(window, cx),
+            (false, "n") => self.create_live_task(cx),
+            (false, ",") | (false, "comma") => self.open_settings(SettingsPage::General, cx),
+            (true, "a") if self.pending_approval_id.is_some() => self.approve_current(true, cx),
+            (true, "d") if self.pending_approval_id.is_some() => self.approve_current(false, cx),
+            (true, "b") => self.toggle_sidebar(cx),
+            (true, "e") => self.add_attachment(cx),
+            (true, "f") => self.insert_mention(cx),
+            (true, "m") => self.cycle_model(cx),
+            (true, "p") => self.toggle_pin_current(cx),
+            (true, "r") => self.cycle_reasoning(cx),
+            (true, "s") => self.share_current(cx),
+            (true, "x") => self.stop_turn(cx),
+            (true, "z") => self.archive_current(cx),
+            (true, "delete") => self.delete_current(cx),
+            _ => return false,
+        }
+        true
     }
 
     pub fn handle_search_key(
@@ -1272,21 +1296,20 @@ impl AppState {
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let key = &event.keystroke;
         if key.key == "escape" {
             self.search_open = false;
             self.query.clear();
+            window.focus(&self.input_focus);
             cx.notify();
-            return;
+            return true;
         }
-        let command = key.modifiers.platform || key.modifiers.control;
-        if command && key.key == "n" {
-            self.create_live_task(cx);
-            return;
+        if self.handle_command_shortcut(key, window, cx) {
+            return true;
         }
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
-            return;
+            return false;
         }
         let _ = apply_input_edit(
             &mut self.query,
@@ -1300,12 +1323,19 @@ impl AppState {
             window.focus(&self.search_focus);
         }
         cx.notify();
+        false
     }
 
-    pub fn handle_rename_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    pub fn handle_rename_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = &event.keystroke;
         if key.key == "escape" {
             self.cancel_rename(cx);
+            window.focus(&self.input_focus);
             return;
         }
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
@@ -1320,7 +1350,7 @@ impl AppState {
             false,
         ) == InputAction::Send
         {
-            self.commit_rename(cx);
+            self.commit_rename(window, cx);
         } else {
             cx.notify();
         }
