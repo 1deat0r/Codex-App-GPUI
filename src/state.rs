@@ -1046,6 +1046,20 @@ impl AppState {
         }
     }
 
+    pub fn toggle_pin_current(&mut self, cx: &mut Context<Self>) {
+        let Some(task) = self.current_task_mut() else {
+            return;
+        };
+        task.pinned = !task.pinned;
+        let message = if task.pinned {
+            "Task pinned"
+        } else {
+            "Task unpinned"
+        };
+        self.persist(cx);
+        self.notify_success(message, cx);
+    }
+
     pub fn delete_current(&mut self, cx: &mut Context<Self>) {
         let project_id = self.selected_project.clone();
         let task_id = self.selected_task.clone();

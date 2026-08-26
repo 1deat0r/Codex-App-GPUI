@@ -732,6 +732,10 @@ fn task_row(
                 .flex_shrink_0(),
         )
         .child(div().flex_1().truncate().child(task.title.clone()))
+        .children(
+            task.pinned
+                .then(|| div().text_color(theme::WARNING).child("◆")),
+        )
         .children((task.status == "running").then(|| div().text_color(theme::ACCENT).child("•")))
         .on_click(
             window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
@@ -1052,6 +1056,21 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
                 "Fork task",
                 window.listener_for(&cx.entity(), |this, _event, _window, cx| {
                     this.fork_current(cx);
+                }),
+            ),
+            menu_action(
+                "menu-pin",
+                if state
+                    .current_task()
+                    .map(|task| task.pinned)
+                    .unwrap_or(false)
+                {
+                    "Unpin task"
+                } else {
+                    "Pin task"
+                },
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.toggle_pin_current(cx);
                 }),
             ),
             menu_action(
