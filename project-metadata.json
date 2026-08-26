@@ -1,0 +1,7 @@
+{
+  "name": "Codex App GPUI",
+  "repository": "Codex-App-GPUI",
+  "description": "Native GPU-accelerated Codex desktop client built with Rust and GPUI.",
+  "reference": "Codex Desktop 26.820.60940",
+  "license": "MIT"
+}

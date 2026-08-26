@@ -1,0 +1,9 @@
+/target/
+/.unlazy/
+/.unlazy-hook-state.json
+/.claude/settings.local.json
+/.codex-gpui/
+*.log
+*.tmp
+*.png
+*.jpg
