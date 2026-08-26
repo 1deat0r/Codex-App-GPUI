@@ -2,6 +2,8 @@
 
 Native GPU-accelerated Codex desktop client built with Rust and GPUI.
 
+Public repository: [github.com/1deat0r/Codex-App-GPUI](https://github.com/1deat0r/Codex-App-GPUI)
+
 This project is an independent native client for the Codex app-server protocol. It is being developed against the locally observed Codex Desktop reference and keeps the parity claim evidence-based: a surface is not called complete until it is implemented and verified.
 
 ## Current status
