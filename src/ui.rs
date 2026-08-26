@@ -1198,8 +1198,8 @@ fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                         }),
                     )
                     .on_key_down(
-                        window.listener_for(&cx.entity(), |this, event, _window, cx| {
-                            this.handle_input_key(event, cx);
+                        window.listener_for(&cx.entity(), |this, event, window, cx| {
+                            this.handle_input_key(event, window, cx);
                         }),
                     ),
             )

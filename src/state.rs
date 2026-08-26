@@ -1117,8 +1117,26 @@ impl AppState {
         cx.notify();
     }
 
-    pub fn handle_input_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    pub fn handle_input_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = &event.keystroke;
+        if key.key == "f2" {
+            self.begin_rename(window, cx);
+            return;
+        }
+        let command = key.modifiers.platform || key.modifiers.control;
+        if command && key.key == "k" {
+            self.toggle_search(window, cx);
+            return;
+        }
+        if command && key.key == "n" {
+            self.create_live_task(cx);
+            return;
+        }
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
             return;
         }
@@ -1178,6 +1196,11 @@ impl AppState {
             self.search_open = false;
             self.query.clear();
             cx.notify();
+            return;
+        }
+        let command = key.modifiers.platform || key.modifiers.control;
+        if command && key.key == "n" {
+            self.create_live_task(cx);
             return;
         }
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
