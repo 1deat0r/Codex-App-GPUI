@@ -1001,6 +1001,33 @@ impl AppState {
         self.notify_success("Thread link copied", cx);
     }
 
+    pub fn review_current(&mut self, cx: &mut Context<Self>) {
+        if self.connection != ConnectionState::Live || self.selected_project != "live-codex" {
+            self.notify_success("Review is available for live Codex tasks", cx);
+            return;
+        }
+        let Some(client) = self.live_client.clone() else {
+            return;
+        };
+        let thread_id = self.selected_task.clone();
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(
+                        async move { smol::unblock(move || client.review_start(&thread_id)).await },
+                    )
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(_) => this.notify_success("Review started", cx),
+                    Err(error) => this.fail(&format!("Review failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
     pub fn begin_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(task) = self.current_task() else {
             return;

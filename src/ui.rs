@@ -1064,6 +1064,13 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
                 }),
             ),
             menu_action(
+                "menu-review",
+                "Review changes",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.review_current(cx);
+                }),
+            ),
+            menu_action(
                 "menu-pin",
                 if state
                     .current_task()

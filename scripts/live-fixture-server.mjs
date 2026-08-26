@@ -162,6 +162,33 @@ function handle(message) {
       case "thread/shellCommand":
         response(id, {});
         break;
+      case "review/start": {
+        const thread = threads.get(params.threadId) ?? createThread();
+        const turn = {
+          id: `fixture-review-${nextTurn++}`,
+          threadId: thread.id,
+          status: "inProgress",
+        };
+        const item = {
+          id: `fixture-review-item-${nextItem++}`,
+          type: "fileChange",
+          status: "completed",
+          changes: [
+            {
+              path: "fixture-review.txt",
+              kind: "modified",
+              diff: "+ fixture review passed\n- fixture review pending",
+            },
+          ],
+        };
+        response(id, { turn: { ...turn, status: "completed" } });
+        thread.status = "running";
+        notify("turn/started", { threadId: thread.id, turn });
+        notify("item/started", { threadId: thread.id, item });
+        notify("item/completed", { threadId: thread.id, item });
+        completeTurn(thread, turn, item);
+        break;
+      }
       case "turn/start": {
         const thread = threads.get(params.threadId) ?? createThread();
         const text = params.input?.[0]?.text ?? "";

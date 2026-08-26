@@ -503,6 +503,17 @@ impl AppServerClient {
             json!({ "threadId": thread_id, "name": name }),
         )
     }
+
+    pub fn review_start(&self, thread_id: &str) -> Result<Value> {
+        self.request(
+            "review/start",
+            json!({
+                "threadId": thread_id,
+                "target": { "type": "uncommittedChanges" },
+                "delivery": "inline"
+            }),
+        )
+    }
 }
 
 impl Drop for AppServerClient {
