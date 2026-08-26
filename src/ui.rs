@@ -1261,22 +1261,33 @@ fn entry_view(
                     .child(time.clone()),
             ),
         Entry::Reasoning {
-            text, collapsed, ..
-        } => div()
-            .id(ElementId::Name(
-                format!("entry-reasoning-{}", text.len()).into(),
-            ))
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(rems(0.74))
-            .text_color(theme::TEXT_FAINT)
-            .child(if *collapsed {
-                "▸ reasoning"
-            } else {
-                "▾ reasoning"
-            })
-            .child(text.clone()),
+            id,
+            text,
+            collapsed,
+        } => {
+            let reasoning_id = id.clone();
+            let mut view = div()
+                .id(ElementId::Name(format!("entry-reasoning-{id}").into()))
+                .flex()
+                .items_center()
+                .gap_2()
+                .cursor_pointer()
+                .text_size(rems(0.74))
+                .text_color(theme::TEXT_FAINT)
+                .child(if *collapsed {
+                    "▸ reasoning"
+                } else {
+                    "▾ reasoning"
+                });
+            if !*collapsed {
+                view = view.child(text.clone());
+            }
+            view.on_click(
+                window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                    this.toggle_reasoning(reasoning_id.clone(), cx);
+                }),
+            )
+        }
         Entry::Tool {
             name,
             status,

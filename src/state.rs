@@ -1135,6 +1135,20 @@ impl AppState {
         self.notify_success("Composer cleared", cx);
     }
 
+    pub fn toggle_reasoning(&mut self, reasoning_id: String, cx: &mut Context<Self>) {
+        let Some(task) = self.current_task_mut() else {
+            return;
+        };
+        if let Some(Entry::Reasoning { collapsed, .. }) = task
+            .entries
+            .iter_mut()
+            .find(|entry| entry_id(entry) == reasoning_id)
+        {
+            *collapsed = !*collapsed;
+            cx.notify();
+        }
+    }
+
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_collapsed = !self.sidebar_collapsed;
         self.view_open = false;
