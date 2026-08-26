@@ -10,7 +10,7 @@ This project is an independent native client for the Codex app-server protocol. 
 
 **Parity coverage:** 9/24 avenues verified (38%). 13 implemented, 0 planned, 2 blocked.
 
-**Acceptance gates:** 9/10 checked. See [GATES.md](GATES.md) for runnable and manual evidence.
+**Acceptance gates:** 10/10 checked. See [GATES.md](GATES.md) for runnable and manual evidence.
 
 ## Product surface
 

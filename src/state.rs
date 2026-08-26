@@ -71,6 +71,7 @@ pub struct AppState {
     pub rename_draft: String,
     pub rename_caret: usize,
     event_loop_started: bool,
+    pub root_focus: FocusHandle,
     pub input_focus: FocusHandle,
     pub search_focus: FocusHandle,
     pub rename_focus: FocusHandle,
@@ -106,6 +107,7 @@ impl AppState {
             rename_draft: String::new(),
             rename_caret: 0,
             event_loop_started: false,
+            root_focus: cx.focus_handle(),
             input_focus: cx.focus_handle(),
             search_focus: cx.focus_handle(),
             rename_focus: cx.focus_handle(),
@@ -334,6 +336,14 @@ impl AppState {
                 if thread_id == Some(self.selected_task.as_str()) {
                     self.streaming = false;
                     self.active_turn_id = None;
+                    self.pending_approval_id = None;
+                    if let Some(task) = self.current_task_mut() {
+                        for entry in &mut task.entries {
+                            if let Entry::Approval { requested, .. } = entry {
+                                *requested = false;
+                            }
+                        }
+                    }
                 }
                 persist = true;
             }
@@ -1273,7 +1283,10 @@ impl AppState {
         match (key.modifiers.shift, key.key.as_str()) {
             (false, "k") => self.toggle_search(window, cx),
             (false, "n") => self.create_live_task(cx),
-            (false, ",") | (false, "comma") => self.open_settings(SettingsPage::General, cx),
+            (false, ",") | (false, "comma") => {
+                self.open_settings(SettingsPage::General, cx);
+                window.focus(&self.root_focus);
+            }
             (true, "a") if self.pending_approval_id.is_some() => self.approve_current(true, cx),
             (true, "d") if self.pending_approval_id.is_some() => self.approve_current(false, cx),
             (true, "b") => self.toggle_sidebar(cx),

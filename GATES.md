@@ -37,8 +37,8 @@ Scope: deliver a native GPUI Codex desktop client whose shell, state model, prot
 - [x] G7: the native window renders the Codex shell at desktop dimensions with the reference navigation, thread, composer, account, and project surfaces visible and usable
   EVIDENCE: verified 2026-08-27 on Linux at 1920x1080; `/tmp/codex-app-gpui-sidebar-expanded-final.png` shows the expanded native shell with menu bar, navigation, Live Codex/Codex-App-GPUI projects, task, header actions, composer, account footer; `/tmp/codex-app-gpui-sidebar-collapsed.png` shows the functional compact shell; keyboard input and Ctrl/Cmd+Shift+B were exercised.
 
-- [ ] G8: primary user flows work end to end in the native window: new task, task selection/search, message send/stop, model/reasoning selection, attachment/mention affordances, approval decision, archive/delete, share, and settings navigation
-  EVIDENCE: not met; native keyboard input, search opening, task creation, rename, and sidebar collapse were exercised, but the complete destructive/approval/share/settings flow was not exercised end to end.
+- [x] G8: primary user flows work end to end in the native window: new task, task selection/search, message send/stop, model/reasoning selection, attachment/mention affordances, approval decision, archive/delete, share, and settings navigation
+  EVIDENCE: verified 2026-08-27 with the repository-owned `scripts/live-fixture-server.mjs` and isolated `CODEX_APP_GPUI_HOME=/tmp/codex-app-gpui-fixture-state.tuXpsb`; native screenshots `/tmp/codex-app-gpui-fixture-search.png`, `/tmp/codex-app-gpui-fixture-new-task-fixed.png`, `/tmp/codex-app-gpui-fixture-stopped-fixed.png`, `/tmp/codex-app-gpui-fixture-model-reasoning.png`, `/tmp/codex-app-gpui-fixture-attach-mention-fixed.png`, `/tmp/codex-app-gpui-fixture-approved-fixed.png`, `/tmp/codex-app-gpui-fixture-archived.png`, `/tmp/codex-app-gpui-fixture-deleted.png`, `/tmp/codex-app-gpui-fixture-share-fixed.png`, and `/tmp/codex-app-gpui-fixture-settings-fixed.png` show the exercised flows. The fixture performs no network or model calls.
 
 - [x] G9: the client can attach to a real locally installed Codex app-server and display a live thread without replacing or mutating the reference app's user data
   EVIDENCE: verified 2026-08-27 with the locally installed `codex app-server --stdio`, `CODEX_HOME=/tmp/codex-app-gpui-live.jJeDIx`, and `CODEX_APP_GPUI_HOME=/tmp/codex-app-gpui-state.zYp43q`; the native window displayed a Live Codex task and the process was stopped without sending a turn; the reference desktop history remained outside those temporary paths.
@@ -46,4 +46,4 @@ Scope: deliver a native GPUI Codex desktop client whose shell, state model, prot
 - [x] G10: repository-owned checks contain no hard-coded credentials, private tokens, or destructive data commands
   CHECK: node scripts/check-safety.mjs
   EXPECT: PARITY_G10_SAFETY_OK
-  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/Codex-App-GPUI; path=815fc308d6fc/35 entries; output=PARITY_G10_SAFETY_OK files=23
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/Codex-App-GPUI; path=815fc308d6fc/35 entries; output=PARITY_G10_SAFETY_OK files=24

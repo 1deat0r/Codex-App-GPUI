@@ -182,6 +182,11 @@ function handle(message) {
         response(id, {});
         const thread = threads.get(params.threadId);
         if (thread) {
+          for (const [requestId, approval] of approvals) {
+            if (approval.thread.id === thread.id && approval.turn.id === params.turnId) {
+              approvals.delete(requestId);
+            }
+          }
           thread.status = "idle";
           notify("turn/completed", {
             threadId: thread.id,

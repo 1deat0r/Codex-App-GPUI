@@ -17,6 +17,7 @@ pub fn root(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
         .bg(theme::BG_BASE)
         .text_color(theme::TEXT)
         .relative()
+        .track_focus(&state.root_focus)
         .on_key_down(
             window.listener_for(&cx.entity(), |this, event, window, cx| {
                 this.handle_global_key(event, window, cx);
