@@ -38,5 +38,9 @@ pub const NAV_GAP: f32 = 4.0;
 pub const ROW_RADIUS: f32 = 7.0;
 
 pub fn text_color(active: bool) -> gpui::Rgba {
-    if active { TEXT } else { TEXT_MUTED }
+    if active {
+        TEXT
+    } else {
+        TEXT_MUTED
+    }
 }

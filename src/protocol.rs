@@ -66,7 +66,10 @@ impl ServerThread {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let status = value.get("status").map(status_text).unwrap_or_else(|| "notLoaded".into());
+        let status = value
+            .get("status")
+            .map(status_text)
+            .unwrap_or_else(|| "notLoaded".into());
         let model = value
             .get("model")
             .and_then(Value::as_str)
@@ -77,7 +80,14 @@ impl ServerThread {
             .or_else(|| value.get("updated_at"))
             .map(value_text)
             .unwrap_or_default();
-        Some(Self { id, title, cwd, status, model, updated_at })
+        Some(Self {
+            id,
+            title,
+            cwd,
+            status,
+            model,
+            updated_at,
+        })
     }
 }
 
@@ -123,13 +133,31 @@ pub struct AppServerClient {
 impl AppServerClient {
     pub fn spawn(command_line: &str) -> Result<Self> {
         let mut parts = command_line.split_whitespace();
-        let program = parts.next().ok_or_else(|| anyhow!("empty app-server command"))?;
+        let program = parts
+            .next()
+            .ok_or_else(|| anyhow!("empty app-server command"))?;
         let mut command = Command::new(program);
-        command.args(parts).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        let mut child = command.spawn().with_context(|| format!("spawn app-server `{command_line}`"))?;
-        let stdin = child.stdin.take().ok_or_else(|| anyhow!("app-server stdin unavailable"))?;
-        let stdout = child.stdout.take().ok_or_else(|| anyhow!("app-server stdout unavailable"))?;
-        Ok(Self::from_transport(BufReader::new(stdout), stdin, Some(Arc::new(Mutex::new(child)))))
+        command
+            .args(parts)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("spawn app-server `{command_line}`"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("app-server stdin unavailable"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("app-server stdout unavailable"))?;
+        Ok(Self::from_transport(
+            BufReader::new(stdout),
+            stdin,
+            Some(Arc::new(Mutex::new(child))),
+        ))
     }
 
     pub fn from_parts<R, W>(reader: R, writer: W) -> Self
@@ -146,7 +174,10 @@ impl AppServerClient {
         W: Write + Send + 'static,
     {
         let writer: Writer = Arc::new(Mutex::new(Box::new(writer)));
-        let responses = Arc::new(Mutex::new(ResponseState { pending: HashMap::new(), backlog: HashMap::new() }));
+        let responses = Arc::new(Mutex::new(ResponseState {
+            pending: HashMap::new(),
+            backlog: HashMap::new(),
+        }));
         let inbox = Arc::new((
             Mutex::new(EventInbox {
                 queue: VecDeque::new(),
@@ -171,7 +202,11 @@ impl AppServerClient {
     }
 
     pub fn is_live(&self) -> bool {
-        self.child.as_ref().and_then(|child| child.lock().ok()).map(|mut child| child.try_wait().ok().flatten().is_none()).unwrap_or(false)
+        self.child
+            .as_ref()
+            .and_then(|child| child.lock().ok())
+            .map(|mut child| child.try_wait().ok().flatten().is_none())
+            .unwrap_or(false)
     }
 
     pub fn request(&self, method: &str, params: Value) -> Result<Value> {
@@ -185,7 +220,10 @@ impl AppServerClient {
         let (sender, receiver) = mpsc::sync_channel(1);
         let backlog_result;
         {
-            let mut responses = self.responses.lock().map_err(|_| anyhow!("app-server pending requests poisoned"))?;
+            let mut responses = self
+                .responses
+                .lock()
+                .map_err(|_| anyhow!("app-server pending requests poisoned"))?;
             backlog_result = responses.backlog.remove(&id);
             if backlog_result.is_none() {
                 responses.pending.insert(id, sender);
@@ -198,7 +236,10 @@ impl AppServerClient {
             .and_then(|mut writer| write_json_line(&mut **writer, &request));
         if let Err(error) = write_result {
             if backlog_result.is_none() {
-                let _ = self.responses.lock().map(|mut responses| responses.pending.remove(&id));
+                let _ = self
+                    .responses
+                    .lock()
+                    .map(|mut responses| responses.pending.remove(&id));
             }
             return Err(error);
         }
@@ -214,13 +255,19 @@ impl AppServerClient {
             method: method.into(),
             params,
         };
-        let mut writer = self.writer.lock().map_err(|_| anyhow!("app-server writer poisoned"))?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| anyhow!("app-server writer poisoned"))?;
         write_json_line(&mut **writer, &notification)
     }
 
     pub fn respond(&self, id: Value, result: Value) -> Result<()> {
         let response = json!({ "id": id, "result": result });
-        let mut writer = self.writer.lock().map_err(|_| anyhow!("app-server writer poisoned"))?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| anyhow!("app-server writer poisoned"))?;
         write_json_line(&mut **writer, &response)
     }
 
@@ -243,11 +290,19 @@ impl AppServerClient {
     }
 
     pub fn is_closed(&self) -> bool {
-        self.inbox.0.lock().map(|inbox| inbox.closed).unwrap_or(true)
+        self.inbox
+            .0
+            .lock()
+            .map(|inbox| inbox.closed)
+            .unwrap_or(true)
     }
 
     pub fn close_reason(&self) -> Option<String> {
-        self.inbox.0.lock().ok().and_then(|inbox| inbox.close_reason.clone())
+        self.inbox
+            .0
+            .lock()
+            .ok()
+            .and_then(|inbox| inbox.close_reason.clone())
     }
 
     pub fn initialize(&self) -> Result<Value> {
@@ -304,7 +359,10 @@ impl AppServerClient {
     }
 
     pub fn thread_read(&self, thread_id: &str) -> Result<Value> {
-        self.request("thread/read", json!({ "threadId": thread_id, "includeTurns": true }))
+        self.request(
+            "thread/read",
+            json!({ "threadId": thread_id, "includeTurns": true }),
+        )
     }
 
     pub fn turn_start(&self, thread_id: &str, text: &str) -> Result<Value> {
@@ -336,10 +394,7 @@ impl AppServerClient {
         if let Some(approval_policy) = approval_policy.filter(|policy| !policy.is_empty()) {
             params["approvalPolicy"] = Value::String(approval_policy.into());
         }
-        self.request(
-            "turn/start",
-            params,
-        )
+        self.request("turn/start", params)
     }
 
     pub fn turn_steer(&self, thread_id: &str, text: &str) -> Result<Value> {
@@ -350,7 +405,10 @@ impl AppServerClient {
     }
 
     pub fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<Value> {
-        self.request("turn/interrupt", json!({ "threadId": thread_id, "turnId": turn_id }))
+        self.request(
+            "turn/interrupt",
+            json!({ "threadId": thread_id, "turnId": turn_id }),
+        )
     }
 
     pub fn thread_archive(&self, thread_id: &str) -> Result<Value> {
@@ -374,11 +432,17 @@ impl AppServerClient {
     }
 
     pub fn thread_shell_command(&self, thread_id: &str, command: &str) -> Result<Value> {
-        self.request("thread/shellCommand", json!({ "threadId": thread_id, "command": command }))
+        self.request(
+            "thread/shellCommand",
+            json!({ "threadId": thread_id, "command": command }),
+        )
     }
 
     pub fn thread_name_set(&self, thread_id: &str, name: &str) -> Result<Value> {
-        self.request("thread/name/set", json!({ "threadId": thread_id, "name": name }))
+        self.request(
+            "thread/name/set",
+            json!({ "threadId": thread_id, "name": name }),
+        )
     }
 }
 
@@ -395,8 +459,11 @@ impl Drop for AppServerClient {
     }
 }
 
-fn read_messages<R>(mut reader: R, responses: Arc<Mutex<ResponseState>>, inbox: Arc<(Mutex<EventInbox>, Condvar)>)
-where
+fn read_messages<R>(
+    mut reader: R,
+    responses: Arc<Mutex<ResponseState>>,
+    inbox: Arc<(Mutex<EventInbox>, Condvar)>,
+) where
     R: BufRead,
 {
     let mut line = String::new();
@@ -444,7 +511,9 @@ where
     };
 
     if let Ok(mut responses) = responses.lock() {
-        let reason = close_reason.clone().unwrap_or_else(|| "app-server reader stopped".into());
+        let reason = close_reason
+            .clone()
+            .unwrap_or_else(|| "app-server reader stopped".into());
         for (_, sender) in responses.pending.drain() {
             let _ = sender.send(Err(anyhow!(reason.clone())));
         }
@@ -459,7 +528,9 @@ where
 
 fn write_json_line(writer: &mut dyn Write, value: &impl Serialize) -> Result<()> {
     serde_json::to_writer(&mut *writer, value).context("encode app-server JSONL message")?;
-    writer.write_all(b"\n").context("write app-server JSONL message")?;
+    writer
+        .write_all(b"\n")
+        .context("write app-server JSONL message")?;
     writer.flush().context("flush app-server JSONL message")?;
     Ok(())
 }
@@ -495,7 +566,10 @@ mod tests {
             json!({ "jsonrpc": "2.0", "id": 4, "result": { "turn": { "id": "turn-1" } } }),
             json!({ "jsonrpc": "2.0", "id": 5, "result": {} }),
         ];
-        let input = fixture.iter().map(|value| format!("{value}\n")).collect::<String>();
+        let input = fixture
+            .iter()
+            .map(|value| format!("{value}\n"))
+            .collect::<String>();
         let recorded = RecordingWriter::default();
         let bytes = recorded.0.clone();
         let client = AppServerClient::from_parts(Cursor::new(input.into_bytes()), recorded);
@@ -503,8 +577,14 @@ mod tests {
         assert_eq!(client.initialize().unwrap()["userAgent"], "fixture");
         let threads = client.thread_list(None).unwrap();
         assert_eq!(threads[0].title, "Fixture task");
-        assert_eq!(client.thread_start(Some("/tmp" )).unwrap()["thread"]["id"], "t-2");
-        assert_eq!(client.turn_start("t-2", "hello").unwrap()["turn"]["id"], "turn-1");
+        assert_eq!(
+            client.thread_start(Some("/tmp")).unwrap()["thread"]["id"],
+            "t-2"
+        );
+        assert_eq!(
+            client.turn_start("t-2", "hello").unwrap()["turn"]["id"],
+            "turn-1"
+        );
         client.turn_interrupt("t-2", "turn-1").unwrap();
 
         let recorded_output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
@@ -521,13 +601,18 @@ mod tests {
             json!({ "jsonrpc": "2.0", "id": 2, "method": "item/commandExecution/requestApproval", "params": { "command": "rm -i" } }),
             json!({ "jsonrpc": "2.0", "id": 1, "result": {} }),
         ];
-        let input = fixture.iter().map(|value| format!("{value}\n")).collect::<String>();
+        let input = fixture
+            .iter()
+            .map(|value| format!("{value}\n"))
+            .collect::<String>();
         let recorded = RecordingWriter::default();
         let bytes = recorded.0.clone();
         let client = AppServerClient::from_parts(Cursor::new(input.into_bytes()), recorded);
         client.request("initialize", json!({})).unwrap();
         let request = client.next_event(Duration::from_millis(100)).unwrap();
-        client.respond(request["id"].clone(), json!({ "decision": "decline" })).unwrap();
+        client
+            .respond(request["id"].clone(), json!({ "decision": "decline" }))
+            .unwrap();
         let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         assert!(output.contains("\"id\":2"));
         assert!(output.contains("decline"));

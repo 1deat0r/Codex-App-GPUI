@@ -6,7 +6,9 @@ use std::time::Duration;
 use gpui::{AsyncApp, Context, FocusHandle, KeyDownEvent, WeakEntity, Window};
 use serde_json::{json, Value};
 
-use crate::model::{ChildTask, Entry, PlanStep, Project, Route, Settings, SettingsPage, Task, Workspace};
+use crate::model::{
+    ChildTask, Entry, PlanStep, Project, Route, Settings, SettingsPage, Task, Workspace,
+};
 use crate::persistence::{self, Snapshot};
 use crate::protocol::{AppServerClient, ServerThread};
 
@@ -110,32 +112,40 @@ impl AppState {
     }
 
     pub fn init(&mut self, cx: &mut Context<Self>) {
-        let command = std::env::var("CODEX_APP_SERVER_COMMAND").ok().filter(|value| !value.trim().is_empty());
+        let command = std::env::var("CODEX_APP_SERVER_COMMAND")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
         let Some(command) = command else {
             return;
         };
-        let cwd = std::env::current_dir().ok().and_then(|path| path.to_str().map(str::to_owned));
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|path| path.to_str().map(str::to_owned));
         self.connection = ConnectionState::Connecting;
         let async_cx = cx.to_async();
-        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
-            let result = async_cx
-                .background_executor()
-                .spawn(async move { smol::unblock(move || connect_live(&command, cwd.as_deref())).await })
-                .await;
-            let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
-                Ok((client, threads)) => {
-                    this.connection = ConnectionState::Live;
-                    this.live_client = Some(client);
-                    this.import_live_threads(threads);
-                    this.start_event_loop(cx);
-                    this.notify_success("Connected to the local Codex app-server", cx);
-                }
-                Err(error) => {
-                    this.connection = ConnectionState::Offline;
-                    this.fail(&format!("Could not connect to app-server: {error}"), cx);
-                }
-            });
-        })
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || connect_live(&command, cwd.as_deref())).await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok((client, threads)) => {
+                        this.connection = ConnectionState::Live;
+                        this.live_client = Some(client);
+                        this.import_live_threads(threads);
+                        this.start_event_loop(cx);
+                        this.notify_success("Connected to the local Codex app-server", cx);
+                    }
+                    Err(error) => {
+                        this.connection = ConnectionState::Offline;
+                        this.fail(&format!("Could not connect to app-server: {error}"), cx);
+                    }
+                });
+            },
+        )
         .detach();
     }
 
@@ -148,31 +158,42 @@ impl AppState {
         };
         self.event_loop_started = true;
         let async_cx = cx.to_async();
-        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
-            loop {
-                let poll_client = client.clone();
-                let event = async_cx
-                    .background_executor()
-                    .spawn(async move { smol::unblock(move || poll_client.next_event(Duration::from_millis(500))).await })
-                    .await;
-                if let Some(event) = event {
-                    if this
-                        .update(&mut async_cx.clone(), |this, cx| this.apply_server_event(event, cx))
-                        .is_err()
-                    {
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                loop {
+                    let poll_client = client.clone();
+                    let event = async_cx
+                        .background_executor()
+                        .spawn(async move {
+                            smol::unblock(move || {
+                                poll_client.next_event(Duration::from_millis(500))
+                            })
+                            .await
+                        })
+                        .await;
+                    if let Some(event) = event {
+                        if this
+                            .update(&mut async_cx.clone(), |this, cx| {
+                                this.apply_server_event(event, cx)
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    } else if client.is_closed() {
+                        let reason = client
+                            .close_reason()
+                            .unwrap_or_else(|| "app-server disconnected".into());
+                        let _ = this.update(&mut async_cx.clone(), |this, cx| {
+                            this.connection = ConnectionState::Offline;
+                            this.streaming = false;
+                            this.fail(&format!("App-server disconnected: {reason}"), cx);
+                        });
                         break;
                     }
-                } else if client.is_closed() {
-                    let reason = client.close_reason().unwrap_or_else(|| "app-server disconnected".into());
-                    let _ = this.update(&mut async_cx.clone(), |this, cx| {
-                        this.connection = ConnectionState::Offline;
-                        this.streaming = false;
-                        this.fail(&format!("App-server disconnected: {reason}"), cx);
-                    });
-                    break;
                 }
-            }
-        })
+            },
+        )
         .detach();
     }
 
@@ -182,25 +203,32 @@ impl AppState {
         };
         let request_thread_id = thread_id.clone();
         let async_cx = cx.to_async();
-        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
-            let result = async_cx
-                .background_executor()
-                .spawn(async move { smol::unblock(move || client.thread_read(&request_thread_id)).await })
-                .await;
-            let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
-                Ok(value) => {
-                    this.hydrate_thread(&thread_id, &value);
-                    this.persist(cx);
-                    cx.notify();
-                }
-                Err(error) => this.fail(&format!("Could not read live thread: {error}"), cx),
-            });
-        })
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || client.thread_read(&request_thread_id)).await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(value) => {
+                        this.hydrate_thread(&thread_id, &value);
+                        this.persist(cx);
+                        cx.notify();
+                    }
+                    Err(error) => this.fail(&format!("Could not read live thread: {error}"), cx),
+                });
+            },
+        )
         .detach();
     }
 
     fn apply_server_event(&mut self, event: Value, cx: &mut Context<Self>) {
-        let method = event.get("method").and_then(Value::as_str).unwrap_or_default();
+        let method = event
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let params = event.get("params").cloned().unwrap_or(Value::Null);
         let thread_id = event_thread_id(&params);
         let mut persist = false;
@@ -212,7 +240,9 @@ impl AppState {
                 }
             }
             "thread/name/updated" => {
-                if let (Some(thread_id), Some(name)) = (thread_id, params.get("name").and_then(Value::as_str)) {
+                if let (Some(thread_id), Some(name)) =
+                    (thread_id, params.get("name").and_then(Value::as_str))
+                {
                     if let Some(task) = self.task_mut_by_id(thread_id) {
                         task.title = name.into();
                         persist = true;
@@ -269,7 +299,11 @@ impl AppState {
                     .unwrap_or_else(|| "completed".into());
                 if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
                     task.status = completed_task_status(&status).into();
-                    if let Some(items) = params.get("turn").and_then(|turn| turn.get("items")).and_then(Value::as_array) {
+                    if let Some(items) = params
+                        .get("turn")
+                        .and_then(|turn| turn.get("items"))
+                        .and_then(Value::as_array)
+                    {
                         for item in items {
                             if let Some(entry) = entry_from_server_item(item) {
                                 upsert_entry(task, entry);
@@ -293,7 +327,9 @@ impl AppState {
                         .filter_map(|step| {
                             Some(PlanStep {
                                 label: step.get("step")?.as_str()?.into(),
-                                status: normalize_plan_status(step.get("status").map(status_text).unwrap_or_default()),
+                                status: normalize_plan_status(
+                                    step.get("status").map(status_text).unwrap_or_default(),
+                                ),
                             })
                         })
                         .collect();
@@ -302,14 +338,21 @@ impl AppState {
             }
             "thread/tokenUsage/updated" => {
                 if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
-                    if let Some(usage) = params.get("tokenUsage").or_else(|| params.get("usage")).and_then(usage_from_value) {
+                    if let Some(usage) = params
+                        .get("tokenUsage")
+                        .or_else(|| params.get("usage"))
+                        .and_then(usage_from_value)
+                    {
                         task.usage = usage;
                         persist = true;
                     }
                 }
             }
             "item/started" | "item/completed" => {
-                if let (Some(task), Some(item)) = (thread_id.and_then(|id| self.task_mut_by_id(id)), params.get("item")) {
+                if let (Some(task), Some(item)) = (
+                    thread_id.and_then(|id| self.task_mut_by_id(id)),
+                    params.get("item"),
+                ) {
                     if let Some(entry) = entry_from_server_item(item) {
                         upsert_entry(task, entry);
                         persist = method == "item/completed";
@@ -398,8 +441,13 @@ impl AppState {
 
     fn add_approval_request(&mut self, event: &Value, params: &Value, method: &str) {
         self.pending_approval_id = event.get("id").cloned();
-        let thread_id = event_thread_id(params).map(str::to_owned).unwrap_or_else(|| self.selected_task.clone());
-        let item_id = params.get("itemId").and_then(Value::as_str).unwrap_or("approval");
+        let thread_id = event_thread_id(params)
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.selected_task.clone());
+        let item_id = params
+            .get("itemId")
+            .and_then(Value::as_str)
+            .unwrap_or("approval");
         let entry = Entry::Approval {
             id: item_id.into(),
             title: if method.contains("fileChange") {
@@ -431,7 +479,10 @@ impl AppState {
             return;
         };
         let thread = value.get("thread").unwrap_or(value);
-        task.status = thread.get("status").map(status_text).unwrap_or_else(|| task.status.clone());
+        task.status = thread
+            .get("status")
+            .map(status_text)
+            .unwrap_or_else(|| task.status.clone());
         task.entries.clear();
         if let Some(turns) = thread.get("turns").and_then(Value::as_array) {
             for turn in turns {
@@ -457,15 +508,20 @@ impl AppState {
     }
 
     pub fn current_task(&self) -> Option<&Task> {
-        self.workspace.task(&self.selected_project, &self.selected_task)
+        self.workspace
+            .task(&self.selected_project, &self.selected_task)
     }
 
     pub fn current_task_mut(&mut self) -> Option<&mut Task> {
-        self.workspace.task_mut(&self.selected_project, &self.selected_task)
+        self.workspace
+            .task_mut(&self.selected_project, &self.selected_task)
     }
 
     pub fn current_project(&self) -> Option<&Project> {
-        self.workspace.projects.iter().find(|project| project.id == self.selected_project)
+        self.workspace
+            .projects
+            .iter()
+            .find(|project| project.id == self.selected_project)
     }
 
     pub fn visible_tasks<'a>(&'a self, project: &'a Project) -> impl Iterator<Item = &'a Task> {
@@ -505,7 +561,10 @@ impl AppState {
         self.menu_open = false;
         self.rename_open = false;
         self.rename_draft.clear();
-        self.streaming = self.current_task().map(|task| task.status == "running").unwrap_or(false);
+        self.streaming = self
+            .current_task()
+            .map(|task| task.status == "running")
+            .unwrap_or(false);
         self.persist(cx);
         if self.connection == ConnectionState::Live && self.selected_project == "live-codex" {
             self.load_live_thread(self.selected_task.clone(), cx);
@@ -536,7 +595,12 @@ impl AppState {
             usage: Default::default(),
             children: Vec::new(),
         };
-        if let Some(project) = self.workspace.projects.iter_mut().find(|project| project.id == project_id) {
+        if let Some(project) = self
+            .workspace
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        {
             project.tasks.insert(0, task);
         }
         self.select_task(project_id, id, cx);
@@ -550,23 +614,28 @@ impl AppState {
         };
         let cwd = self.current_project().map(|project| project.path.clone());
         let async_cx = cx.to_async();
-        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
-            let result = async_cx
-                .background_executor()
-                .spawn(async move { smol::unblock(move || client.thread_start(cwd.as_deref())).await })
-                .await;
-            let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
-                Ok(value) => {
-                    if let Some(thread) = value.get("thread").and_then(ServerThread::from_value) {
-                        this.add_server_thread(thread.clone());
-                        this.select_task("live-codex".into(), thread.id, cx);
-                    } else {
-                        this.create_task(cx);
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || client.thread_start(cwd.as_deref())).await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(value) => {
+                        if let Some(thread) = value.get("thread").and_then(ServerThread::from_value)
+                        {
+                            this.add_server_thread(thread.clone());
+                            this.select_task("live-codex".into(), thread.id, cx);
+                        } else {
+                            this.create_task(cx);
+                        }
                     }
-                }
-                Err(error) => this.fail(&format!("New task failed: {error}"), cx),
-            });
-        })
+                    Err(error) => this.fail(&format!("New task failed: {error}"), cx),
+                });
+            },
+        )
         .detach();
     }
 
@@ -590,7 +659,12 @@ impl AppState {
     }
 
     pub fn toggle_project(&mut self, project_id: String, cx: &mut Context<Self>) {
-        if let Some(project) = self.workspace.projects.iter_mut().find(|project| project.id == project_id) {
+        if let Some(project) = self
+            .workspace
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        {
             project.collapsed = !project.collapsed;
         }
         cx.notify();
@@ -606,6 +680,9 @@ impl AppState {
         let Some(task) = self.workspace.task_mut(&project_id, &task_id) else {
             return;
         };
+        if task.title == "New task" {
+            task.title = Task::title_from_prompt(&text);
+        }
         task.entries.push(Entry::User {
             id: format!("user-{}", task.entries.len() + 1),
             text: text.clone(),
@@ -622,49 +699,55 @@ impl AppState {
 
         if self.selected_project == "live-codex" {
             if let Some(client) = self.live_client.clone() {
-            let model = self.current_task().map(|task| task.model.clone()).unwrap_or_else(|| self.settings.default_model.clone());
-            let effort = self.current_task().map(|task| task.reasoning.clone()).unwrap_or_else(|| self.settings.default_reasoning.clone());
-            let cwd = self.current_task().map(|task| task.path.clone());
-            let approval_policy = self.settings.approval_mode.clone();
-            let async_cx = cx.to_async();
-            cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
-                let result = async_cx
-                    .background_executor()
-                    .spawn(async move {
-                        smol::unblock(move || {
-                            client.turn_start_with_options(
-                                &task_id,
-                                &text,
-                                Some(&model),
-                                Some(&effort),
-                                cwd.as_deref(),
-                                Some(&approval_policy),
-                            )
-                        })
-                        .await
-                    })
-                    .await;
-                let _ = this.update(&mut async_cx.clone(), |this, cx| {
-                    match result {
-                        Ok(value) => {
-                            this.active_turn_id = value
-                                .get("turn")
-                                .and_then(|turn| turn.get("id"))
-                                .and_then(Value::as_str)
-                                .map(str::to_owned);
-                            this.notify_success("Turn started", cx);
-                        }
-                        Err(error) => {
-                            this.streaming = false;
-                            if let Some(task) = this.current_task_mut() {
-                                task.status = "idle".into();
+                let model = self
+                    .current_task()
+                    .map(|task| task.model.clone())
+                    .unwrap_or_else(|| self.settings.default_model.clone());
+                let effort = self
+                    .current_task()
+                    .map(|task| task.reasoning.clone())
+                    .unwrap_or_else(|| self.settings.default_reasoning.clone());
+                let cwd = self.current_task().map(|task| task.path.clone());
+                let approval_policy = self.settings.approval_mode.clone();
+                let async_cx = cx.to_async();
+                cx.spawn(
+                    move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                        let result = async_cx
+                            .background_executor()
+                            .spawn(async move {
+                                smol::unblock(move || {
+                                    client.turn_start_with_options(
+                                        &task_id,
+                                        &text,
+                                        Some(&model),
+                                        Some(&effort),
+                                        cwd.as_deref(),
+                                        Some(&approval_policy),
+                                    )
+                                })
+                                .await
+                            })
+                            .await;
+                        let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                            Ok(value) => {
+                                this.active_turn_id = value
+                                    .get("turn")
+                                    .and_then(|turn| turn.get("id"))
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned);
+                                this.notify_success("Turn started", cx);
                             }
-                            this.fail(&format!("Turn failed: {error}"), cx);
-                        }
-                    }
-                });
-            })
-            .detach();
+                            Err(error) => {
+                                this.streaming = false;
+                                if let Some(task) = this.current_task_mut() {
+                                    task.status = "idle".into();
+                                }
+                                this.fail(&format!("Turn failed: {error}"), cx);
+                            }
+                        });
+                    },
+                )
+                .detach();
             }
         } else {
             let async_cx = cx.to_async();
@@ -698,16 +781,24 @@ impl AppState {
             return;
         }
         let task_id = self.selected_task.clone();
-        let turn_id = self.active_turn_id.take().unwrap_or_else(|| "current".into());
+        let turn_id = self
+            .active_turn_id
+            .take()
+            .unwrap_or_else(|| "current".into());
         self.streaming = false;
         if let Some(task) = self.current_task_mut() {
             task.status = "idle".into();
-            task.entries.push(Entry::System { id: format!("stop-{}", task.entries.len()), text: "Turn interrupted".into() });
+            task.entries.push(Entry::System {
+                id: format!("stop-{}", task.entries.len()),
+                text: "Turn interrupted".into(),
+            });
         }
         if let Some(client) = self.live_client.clone() {
-            cx.spawn(move |_this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
-                let _ = smol::unblock(move || client.turn_interrupt(&task_id, &turn_id)).await;
-            })
+            cx.spawn(
+                move |_this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                    let _ = smol::unblock(move || client.turn_interrupt(&task_id, &turn_id)).await;
+                },
+            )
             .detach();
         }
         self.notify_success("Turn stopped", cx);
@@ -719,15 +810,24 @@ impl AppState {
         }
         if let Some(task) = self.current_task_mut() {
             task.status = "running".into();
-            task.entries.push(Entry::System { id: format!("continue-{}", task.entries.len()), text: "Continuing the turn".into() });
+            task.entries.push(Entry::System {
+                id: format!("continue-{}", task.entries.len()),
+                text: "Continuing the turn".into(),
+            });
         }
         self.streaming = true;
         self.notify_success("Continuing", cx);
     }
 
     pub fn cycle_model(&mut self, cx: &mut Context<Self>) {
-        let current = self.current_task().map(|task| task.model.clone()).unwrap_or_default();
-        let pos = MODEL_OPTIONS.iter().position(|model| *model == current).unwrap_or(0);
+        let current = self
+            .current_task()
+            .map(|task| task.model.clone())
+            .unwrap_or_default();
+        let pos = MODEL_OPTIONS
+            .iter()
+            .position(|model| *model == current)
+            .unwrap_or(0);
         let next = MODEL_OPTIONS[(pos + 1) % MODEL_OPTIONS.len()].to_string();
         if let Some(task) = self.current_task_mut() {
             task.model = next.clone();
@@ -737,8 +837,14 @@ impl AppState {
     }
 
     pub fn cycle_reasoning(&mut self, cx: &mut Context<Self>) {
-        let current = self.current_task().map(|task| task.reasoning.clone()).unwrap_or_else(|| "auto".into());
-        let pos = REASONING_OPTIONS.iter().position(|level| *level == current).unwrap_or(0);
+        let current = self
+            .current_task()
+            .map(|task| task.reasoning.clone())
+            .unwrap_or_else(|| "auto".into());
+        let pos = REASONING_OPTIONS
+            .iter()
+            .position(|level| *level == current)
+            .unwrap_or(0);
         let next = REASONING_OPTIONS[(pos + 1) % REASONING_OPTIONS.len()].to_string();
         if let Some(task) = self.current_task_mut() {
             task.reasoning = next.clone();
@@ -747,8 +853,37 @@ impl AppState {
         self.notify_success(&format!("Reasoning: {next}"), cx);
     }
 
+    pub fn cycle_approval_mode(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[&str] = &["on-request", "never", "reject"];
+        let current = self.settings.approval_mode.as_str();
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == current)
+            .unwrap_or(0);
+        self.settings.approval_mode = OPTIONS[(position + 1) % OPTIONS.len()].into();
+        let value = self.settings.approval_mode.clone();
+        self.persist(cx);
+        self.notify_success(&format!("Approval mode: {value}"), cx);
+    }
+
+    pub fn cycle_sandbox_mode(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[&str] = &["workspace-write", "read-only", "danger-full-access"];
+        let current = self.settings.sandbox_mode.as_str();
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == current)
+            .unwrap_or(0);
+        self.settings.sandbox_mode = OPTIONS[(position + 1) % OPTIONS.len()].into();
+        let value = self.settings.sandbox_mode.clone();
+        self.persist(cx);
+        self.notify_success(&format!("Sandbox: {value}"), cx);
+    }
+
     pub fn cycle_mode(&mut self, cx: &mut Context<Self>) {
-        let pos = COMPOSER_MODES.iter().position(|mode| *mode == self.composer_mode).unwrap_or(0);
+        let pos = COMPOSER_MODES
+            .iter()
+            .position(|mode| *mode == self.composer_mode)
+            .unwrap_or(0);
         self.composer_mode = COMPOSER_MODES[(pos + 1) % COMPOSER_MODES.len()].into();
         let mode = self.composer_mode.clone();
         self.notify_success(&format!("Mode: {mode}"), cx);
@@ -796,7 +931,8 @@ impl AppState {
             return;
         }
         let thread_id = self.selected_task.clone();
-        let live = self.connection == ConnectionState::Live && self.selected_project == "live-codex";
+        let live =
+            self.connection == ConnectionState::Live && self.selected_project == "live-codex";
         if let Some(task) = self.current_task_mut() {
             task.title = name.clone();
         }
@@ -807,15 +943,22 @@ impl AppState {
         if live {
             if let Some(client) = self.live_client.clone() {
                 let async_cx = cx.to_async();
-                cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
-                    let result = async_cx
-                        .background_executor()
-                        .spawn(async move { smol::unblock(move || client.thread_name_set(&thread_id, &name)).await })
-                        .await;
-                    if let Err(error) = result {
-                        let _ = this.update(&mut async_cx.clone(), |this, cx| this.fail(&format!("Rename failed: {error}"), cx));
-                    }
-                })
+                cx.spawn(
+                    move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                        let result = async_cx
+                            .background_executor()
+                            .spawn(async move {
+                                smol::unblock(move || client.thread_name_set(&thread_id, &name))
+                                    .await
+                            })
+                            .await;
+                        if let Err(error) = result {
+                            let _ = this.update(&mut async_cx.clone(), |this, cx| {
+                                this.fail(&format!("Rename failed: {error}"), cx)
+                            });
+                        }
+                    },
+                )
                 .detach();
             }
         }
@@ -829,7 +972,8 @@ impl AppState {
 
     pub fn archive_current(&mut self, cx: &mut Context<Self>) {
         let task_id = self.selected_task.clone();
-        let live = self.connection == ConnectionState::Live && self.selected_project == "live-codex";
+        let live =
+            self.connection == ConnectionState::Live && self.selected_project == "live-codex";
         if let Some(task) = self.current_task_mut() {
             task.archived = true;
             task.status = "archived".into();
@@ -846,7 +990,12 @@ impl AppState {
         let project_id = self.selected_project.clone();
         let task_id = self.selected_task.clone();
         let live = self.connection == ConnectionState::Live && project_id == "live-codex";
-        if let Some(project) = self.workspace.projects.iter_mut().find(|project| project.id == project_id) {
+        if let Some(project) = self
+            .workspace
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        {
             project.tasks.retain(|task| task.id != task_id);
         }
         self.ensure_selection();
@@ -867,46 +1016,60 @@ impl AppState {
         };
         let thread_id = self.selected_task.clone();
         let async_cx = cx.to_async();
-        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
-            let result = async_cx
-                .background_executor()
-                .spawn(async move { smol::unblock(move || client.thread_fork(&thread_id)).await })
-                .await;
-            let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
-                Ok(value) => {
-                    if let Some(thread) = value.get("thread").and_then(ServerThread::from_value) {
-                        let new_id = thread.id.clone();
-                        this.add_server_thread(thread);
-                        this.select_task("live-codex".into(), new_id, cx);
-                        this.notify_success("Task forked", cx);
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(
+                        async move { smol::unblock(move || client.thread_fork(&thread_id)).await },
+                    )
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(value) => {
+                        if let Some(thread) = value.get("thread").and_then(ServerThread::from_value)
+                        {
+                            let new_id = thread.id.clone();
+                            this.add_server_thread(thread);
+                            this.select_task("live-codex".into(), new_id, cx);
+                            this.notify_success("Task forked", cx);
+                        }
                     }
-                }
-                Err(error) => this.fail(&format!("Fork failed: {error}"), cx),
-            });
-        })
+                    Err(error) => this.fail(&format!("Fork failed: {error}"), cx),
+                });
+            },
+        )
         .detach();
     }
 
-    fn request_thread_action(&self, thread_id: String, action: ThreadAction, cx: &mut Context<Self>) {
+    fn request_thread_action(
+        &self,
+        thread_id: String,
+        action: ThreadAction,
+        cx: &mut Context<Self>,
+    ) {
         let Some(client) = self.live_client.clone() else {
             return;
         };
         let async_cx = cx.to_async();
-        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
-            let result = async_cx
-                .background_executor()
-                .spawn(async move {
-                    smol::unblock(move || match action {
-                        ThreadAction::Archive => client.thread_archive(&thread_id),
-                        ThreadAction::Delete => client.thread_delete(&thread_id),
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || match action {
+                            ThreadAction::Archive => client.thread_archive(&thread_id),
+                            ThreadAction::Delete => client.thread_delete(&thread_id),
+                        })
+                        .await
                     })
-                    .await
-                })
-                .await;
-            if let Err(error) = result {
-                let _ = this.update(&mut async_cx.clone(), |this, cx| this.fail(&format!("Task action failed: {error}"), cx));
-            }
-        })
+                    .await;
+                if let Err(error) = result {
+                    let _ = this.update(&mut async_cx.clone(), |this, cx| {
+                        this.fail(&format!("Task action failed: {error}"), cx)
+                    });
+                }
+            },
+        )
         .detach();
     }
 
@@ -918,15 +1081,30 @@ impl AppState {
                     *requested = false;
                 }
             }
-            task.entries.push(Entry::System { id: format!("approval-{}", task.entries.len()), text: format!("{label} by user") });
+            task.entries.push(Entry::System {
+                id: format!("approval-{}", task.entries.len()),
+                text: format!("{label} by user"),
+            });
         }
-        if let (Some(client), Some(request_id)) = (self.live_client.clone(), self.pending_approval_id.take()) {
-            if let Err(error) = client.respond(request_id, json!({ "decision": if approved { "accept" } else { "decline" } })) {
+        if let (Some(client), Some(request_id)) =
+            (self.live_client.clone(), self.pending_approval_id.take())
+        {
+            if let Err(error) = client.respond(
+                request_id,
+                json!({ "decision": if approved { "accept" } else { "decline" } }),
+            ) {
                 self.fail(&format!("Approval response failed: {error}"), cx);
             }
         }
         self.persist(cx);
-        self.notify_success(if approved { "Approval accepted" } else { "Approval declined" }, cx);
+        self.notify_success(
+            if approved {
+                "Approval accepted"
+            } else {
+                "Approval declined"
+            },
+            cx,
+        );
     }
 
     pub fn toggle_bool_setting(&mut self, setting: &str, cx: &mut Context<Self>) {
@@ -944,7 +1122,14 @@ impl AppState {
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
             return;
         }
-        let action = apply_input_edit(&mut self.draft, &mut self.caret, &key.key, key.key_char.as_deref(), key.modifiers.shift, self.streaming);
+        let action = apply_input_edit(
+            &mut self.draft,
+            &mut self.caret,
+            &key.key,
+            key.key_char.as_deref(),
+            key.modifiers.shift,
+            self.streaming,
+        );
         if action == InputAction::Send {
             self.send(cx);
         } else {
@@ -952,7 +1137,12 @@ impl AppState {
         }
     }
 
-    pub fn handle_global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn handle_global_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = &event.keystroke;
         if key.key == "escape" {
             if self.rename_open {
@@ -977,7 +1167,12 @@ impl AppState {
         }
     }
 
-    pub fn handle_search_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn handle_search_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = &event.keystroke;
         if key.key == "escape" {
             self.search_open = false;
@@ -988,7 +1183,14 @@ impl AppState {
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
             return;
         }
-        let _ = apply_input_edit(&mut self.query, &mut self.caret, &key.key, key.key_char.as_deref(), key.modifiers.shift, false);
+        let _ = apply_input_edit(
+            &mut self.query,
+            &mut self.caret,
+            &key.key,
+            key.key_char.as_deref(),
+            key.modifiers.shift,
+            false,
+        );
         if key.key == "enter" {
             window.focus(&self.search_focus);
         }
@@ -1004,7 +1206,15 @@ impl AppState {
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
             return;
         }
-        if apply_input_edit(&mut self.rename_draft, &mut self.rename_caret, &key.key, key.key_char.as_deref(), key.modifiers.shift, false) == InputAction::Send {
+        if apply_input_edit(
+            &mut self.rename_draft,
+            &mut self.rename_caret,
+            &key.key,
+            key.key_char.as_deref(),
+            key.modifiers.shift,
+            false,
+        ) == InputAction::Send
+        {
             self.commit_rename(cx);
         } else {
             cx.notify();
@@ -1012,7 +1222,10 @@ impl AppState {
     }
 
     fn ensure_selection(&mut self) {
-        let selected_exists = self.workspace.task(&self.selected_project, &self.selected_task).is_some();
+        let selected_exists = self
+            .workspace
+            .task(&self.selected_project, &self.selected_task)
+            .is_some();
         if selected_exists {
             return;
         }
@@ -1040,13 +1253,15 @@ impl AppState {
 
     fn clear_toast_later(&mut self, cx: &mut Context<Self>) {
         let async_cx = cx.to_async();
-        cx.spawn(move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
-            smol::Timer::after(Duration::from_secs(4)).await;
-            let _ = this.update(&mut async_cx.clone(), |this, cx| {
-                this.toast = None;
-                cx.notify();
-            });
-        })
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                smol::Timer::after(Duration::from_secs(4)).await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| {
+                    this.toast = None;
+                    cx.notify();
+                });
+            },
+        )
         .detach();
     }
 
@@ -1054,11 +1269,16 @@ impl AppState {
         if threads.is_empty() {
             return;
         }
-        self.workspace.projects.retain(|project| project.id == "codex-app-gpui");
+        self.workspace
+            .projects
+            .retain(|project| project.id == "codex-app-gpui");
         let mut live = Project {
             id: "live-codex".into(),
             name: "Live Codex".into(),
-            path: threads.first().map(|thread| thread.cwd.clone()).unwrap_or_default(),
+            path: threads
+                .first()
+                .map(|thread| thread.cwd.clone())
+                .unwrap_or_default(),
             collapsed: false,
             tasks: Vec::new(),
         };
@@ -1066,30 +1286,54 @@ impl AppState {
             live.tasks.push(task_from_server(&thread));
         }
         self.workspace.projects.insert(0, live);
-        if let Some(task) = self.workspace.projects.first().and_then(|project| project.tasks.first()) {
+        if let Some(task) = self
+            .workspace
+            .projects
+            .first()
+            .and_then(|project| project.tasks.first())
+        {
             self.selected_project = "live-codex".into();
             self.selected_task = task.id.clone();
         }
     }
 
     fn add_server_thread(&mut self, thread: ServerThread) {
-        if !self.workspace.projects.iter().any(|project| project.id == "live-codex") {
-            self.workspace.projects.insert(0, Project { id: "live-codex".into(), name: "Live Codex".into(), path: thread.cwd.clone(), collapsed: false, tasks: Vec::new() });
+        if !self
+            .workspace
+            .projects
+            .iter()
+            .any(|project| project.id == "live-codex")
+        {
+            self.workspace.projects.insert(
+                0,
+                Project {
+                    id: "live-codex".into(),
+                    name: "Live Codex".into(),
+                    path: thread.cwd.clone(),
+                    collapsed: false,
+                    tasks: Vec::new(),
+                },
+            );
         }
-        if let Some(project) = self.workspace.projects.iter_mut().find(|project| project.id == "live-codex") {
-        if let Some(task) = project.tasks.iter_mut().find(|task| task.id == thread.id) {
-            task.title = thread.title;
-            task.status = thread.status;
-            task.path = thread.cwd;
-            if !thread.model.is_empty() {
-                task.model = thread.model;
+        if let Some(project) = self
+            .workspace
+            .projects
+            .iter_mut()
+            .find(|project| project.id == "live-codex")
+        {
+            if let Some(task) = project.tasks.iter_mut().find(|task| task.id == thread.id) {
+                task.title = thread.title;
+                task.status = thread.status;
+                task.path = thread.cwd;
+                if !thread.model.is_empty() {
+                    task.model = thread.model;
+                }
+                if !thread.updated_at.is_empty() {
+                    task.updated_at = thread.updated_at;
+                }
+            } else {
+                project.tasks.insert(0, task_from_server(&thread));
             }
-            if !thread.updated_at.is_empty() {
-                task.updated_at = thread.updated_at;
-            }
-        } else {
-            project.tasks.insert(0, task_from_server(&thread));
-        }
         }
     }
 }
@@ -1100,12 +1344,19 @@ enum ThreadAction {
     Delete,
 }
 
-fn connect_live(command: &str, cwd: Option<&str>) -> anyhow::Result<(Arc<AppServerClient>, Vec<ServerThread>)> {
+fn connect_live(
+    command: &str,
+    cwd: Option<&str>,
+) -> anyhow::Result<(Arc<AppServerClient>, Vec<ServerThread>)> {
     let client = Arc::new(AppServerClient::spawn(command)?);
     client.initialize()?;
     let mut threads = client.thread_list(None)?;
     if threads.is_empty() && std::env::var_os("CODEX_APP_GPUI_CREATE_LIVE_THREAD").is_some() {
-        if let Some(thread) = client.thread_start(cwd)?.get("thread").and_then(ServerThread::from_value) {
+        if let Some(thread) = client
+            .thread_start(cwd)?
+            .get("thread")
+            .and_then(ServerThread::from_value)
+        {
             threads.push(thread);
         }
     }
@@ -1120,12 +1371,23 @@ fn task_from_server(thread: &ServerThread) -> Task {
         status: thread.status.clone(),
         path: thread.cwd.clone(),
         branch: None,
-        model: if thread.model.is_empty() { "5.6 Luna Max".into() } else { thread.model.clone() },
+        model: if thread.model.is_empty() {
+            "5.6 Luna Max".into()
+        } else {
+            thread.model.clone()
+        },
         reasoning: "auto".into(),
-        updated_at: if thread.updated_at.is_empty() { "Live".into() } else { thread.updated_at.clone() },
+        updated_at: if thread.updated_at.is_empty() {
+            "Live".into()
+        } else {
+            thread.updated_at.clone()
+        },
         archived: false,
         pinned: false,
-        entries: vec![Entry::System { id: format!("system-{}", thread.id), text: "Connected to Codex app-server. Select this task to continue.".into() }],
+        entries: vec![Entry::System {
+            id: format!("system-{}", thread.id),
+            text: "Connected to Codex app-server. Select this task to continue.".into(),
+        }],
         plan: Vec::new(),
         usage: Default::default(),
         children: Vec::new(),
@@ -1136,9 +1398,24 @@ fn event_thread_id(params: &Value) -> Option<&str> {
     params
         .get("threadId")
         .and_then(Value::as_str)
-        .or_else(|| params.get("thread").and_then(|thread| thread.get("id")).and_then(Value::as_str))
-        .or_else(|| params.get("turn").and_then(|turn| turn.get("threadId")).and_then(Value::as_str))
-        .or_else(|| params.get("item").and_then(|item| item.get("threadId")).and_then(Value::as_str))
+        .or_else(|| {
+            params
+                .get("thread")
+                .and_then(|thread| thread.get("id"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(|turn| turn.get("threadId"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            params
+                .get("item")
+                .and_then(|item| item.get("threadId"))
+                .and_then(Value::as_str)
+        })
 }
 
 fn status_text(value: &Value) -> String {
@@ -1155,7 +1432,12 @@ fn value_text(value: &Value) -> String {
         Value::String(value) => value.clone(),
         Value::Number(value) => value.to_string(),
         Value::Bool(value) => value.to_string(),
-        Value::Array(values) => values.iter().map(value_text).filter(|value| !value.is_empty()).collect::<Vec<_>>().join(" "),
+        Value::Array(values) => values
+            .iter()
+            .map(value_text)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
         Value::Object(object) => object
             .get("text")
             .or_else(|| object.get("summary"))
@@ -1166,7 +1448,10 @@ fn value_text(value: &Value) -> String {
 }
 
 fn string_field(value: &Value, names: &[&str]) -> String {
-    names.iter().find_map(|name| value.get(*name).map(value_text)).unwrap_or_default()
+    names
+        .iter()
+        .find_map(|name| value.get(*name).map(value_text))
+        .unwrap_or_default()
 }
 
 fn normalize_item_status(status: String) -> String {
@@ -1200,13 +1485,27 @@ fn completed_task_status(status: &str) -> &'static str {
 fn usage_from_value(value: &Value) -> Option<crate::model::Usage> {
     let input = number_field(value, &["inputTokens", "input_tokens", "input"]);
     let output = number_field(value, &["outputTokens", "output_tokens", "output"]);
-    let cached = number_field(value, &["cachedInputTokens", "cached_input_tokens", "cached"]);
-    let context = number_field(value, &["totalTokens", "total_tokens", "contextTokens", "context"]);
-    (input > 0 || output > 0 || cached > 0 || context > 0).then_some(crate::model::Usage { input, output, cached, context })
+    let cached = number_field(
+        value,
+        &["cachedInputTokens", "cached_input_tokens", "cached"],
+    );
+    let context = number_field(
+        value,
+        &["totalTokens", "total_tokens", "contextTokens", "context"],
+    );
+    (input > 0 || output > 0 || cached > 0 || context > 0).then_some(crate::model::Usage {
+        input,
+        output,
+        cached,
+        context,
+    })
 }
 
 fn number_field(value: &Value, names: &[&str]) -> u64 {
-    names.iter().find_map(|name| value.get(*name).and_then(Value::as_u64)).unwrap_or_default()
+    names
+        .iter()
+        .find_map(|name| value.get(*name).and_then(Value::as_u64))
+        .unwrap_or_default()
 }
 
 fn entry_from_server_item(item: &Value) -> Option<Entry> {
@@ -1239,15 +1538,30 @@ fn entry_from_server_item(item: &Value) -> Option<Entry> {
             let status = normalize_item_status(string_field(item, &["status"]));
             Some(Entry::Tool {
                 id,
-                name: if command.is_empty() { "Command execution".into() } else { command },
+                name: if command.is_empty() {
+                    "Command execution".into()
+                } else {
+                    command
+                },
                 status: status.clone(),
-                detail: if cwd.is_empty() { status } else { format!("{cwd} · {status}") },
+                detail: if cwd.is_empty() {
+                    status
+                } else {
+                    format!("{cwd} · {status}")
+                },
                 output: string_field(item, &["aggregatedOutput", "output"]),
             })
         }
         "fileChange" => {
-            let changes = item.get("changes").and_then(Value::as_array).cloned().unwrap_or_default();
-            let path = changes.first().map(|change| string_field(change, &["path"])).unwrap_or_else(|| "File changes".into());
+            let changes = item
+                .get("changes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let path = changes
+                .first()
+                .map(|change| string_field(change, &["path"]))
+                .unwrap_or_else(|| "File changes".into());
             let mut additions = 0;
             let mut deletions = 0;
             let summary = changes
@@ -1266,23 +1580,41 @@ fn entry_from_server_item(item: &Value) -> Option<Entry> {
                 .filter(|value| !value.is_empty())
                 .collect::<Vec<_>>()
                 .join(", ");
-            Some(Entry::Diff { id, path, additions, deletions, summary })
+            Some(Entry::Diff {
+                id,
+                path,
+                additions,
+                deletions,
+                summary,
+            })
         }
-        "mcpToolCall" | "collabToolCall" | "collabAgentToolCall" | "webSearch" => Some(Entry::Tool {
-            id,
-            name: item_type.into(),
-            status: normalize_item_status(string_field(item, &["status"])),
-            detail: string_field(item, &["tool", "server", "query", "prompt"]),
-            output: string_field(item, &["result", "error"]),
-        }),
+        "mcpToolCall" | "collabToolCall" | "collabAgentToolCall" | "webSearch" => {
+            Some(Entry::Tool {
+                id,
+                name: item_type.into(),
+                status: normalize_item_status(string_field(item, &["status"])),
+                detail: string_field(item, &["tool", "server", "query", "prompt"]),
+                output: string_field(item, &["result", "error"]),
+            })
+        }
         "imageGeneration" | "imageView" => Some(Entry::Attachment {
             id,
             name: string_field(item, &["savedPath", "path", "revisedPrompt"]),
             attachment_kind: item_type.into(),
         }),
-        "contextCompaction" | "compacted" => Some(Entry::System { id, text: "Conversation context compacted".into() }),
-        "enteredReviewMode" => Some(Entry::System { id, text: format!("Review started: {}", string_field(item, &["review"])) }),
-        "exitedReviewMode" => Some(Entry::Assistant { id, text: string_field(item, &["review"]), time: "Live".into() }),
+        "contextCompaction" | "compacted" => Some(Entry::System {
+            id,
+            text: "Conversation context compacted".into(),
+        }),
+        "enteredReviewMode" => Some(Entry::System {
+            id,
+            text: format!("Review started: {}", string_field(item, &["review"])),
+        }),
+        "exitedReviewMode" => Some(Entry::Assistant {
+            id,
+            text: string_field(item, &["review"]),
+            time: "Live".into(),
+        }),
         _ => None,
     }
 }
@@ -1302,7 +1634,11 @@ fn entry_id(entry: &Entry) -> &str {
 }
 
 fn upsert_entry(task: &mut Task, entry: Entry) {
-    if let Some(existing) = task.entries.iter_mut().find(|existing| entry_id(existing) == entry_id(&entry)) {
+    if let Some(existing) = task
+        .entries
+        .iter_mut()
+        .find(|existing| entry_id(existing) == entry_id(&entry))
+    {
         *existing = entry;
     } else {
         task.entries.push(entry);
@@ -1310,26 +1646,52 @@ fn upsert_entry(task: &mut Task, entry: Entry) {
 }
 
 fn append_assistant_delta(task: &mut Task, item_id: &str, delta: &str) {
-    if let Some(Entry::Assistant { text, .. }) = task.entries.iter_mut().find(|entry| entry_id(entry) == item_id) {
+    if let Some(Entry::Assistant { text, .. }) = task
+        .entries
+        .iter_mut()
+        .find(|entry| entry_id(entry) == item_id)
+    {
         text.push_str(delta);
     } else {
-        task.entries.push(Entry::Assistant { id: item_id.into(), text: delta.into(), time: "Live".into() });
+        task.entries.push(Entry::Assistant {
+            id: item_id.into(),
+            text: delta.into(),
+            time: "Live".into(),
+        });
     }
 }
 
 fn append_reasoning_delta(task: &mut Task, item_id: &str, delta: &str) {
-    if let Some(Entry::Reasoning { text, .. }) = task.entries.iter_mut().find(|entry| entry_id(entry) == item_id) {
+    if let Some(Entry::Reasoning { text, .. }) = task
+        .entries
+        .iter_mut()
+        .find(|entry| entry_id(entry) == item_id)
+    {
         text.push_str(delta);
     } else {
-        task.entries.push(Entry::Reasoning { id: item_id.into(), text: delta.into(), collapsed: false });
+        task.entries.push(Entry::Reasoning {
+            id: item_id.into(),
+            text: delta.into(),
+            collapsed: false,
+        });
     }
 }
 
 fn append_tool_output(task: &mut Task, item_id: &str, delta: &str) {
-    if let Some(Entry::Tool { output, .. }) = task.entries.iter_mut().find(|entry| entry_id(entry) == item_id) {
+    if let Some(Entry::Tool { output, .. }) = task
+        .entries
+        .iter_mut()
+        .find(|entry| entry_id(entry) == item_id)
+    {
         output.push_str(delta);
     } else {
-        task.entries.push(Entry::Tool { id: item_id.into(), name: "Command execution".into(), status: "running".into(), detail: String::new(), output: delta.into() });
+        task.entries.push(Entry::Tool {
+            id: item_id.into(),
+            name: "Command execution".into(),
+            status: "running".into(),
+            detail: String::new(),
+            output: delta.into(),
+        });
     }
 }
 
@@ -1339,7 +1701,14 @@ pub enum InputAction {
     Send,
 }
 
-pub fn apply_input_edit(draft: &mut String, caret: &mut usize, key: &str, key_char: Option<&str>, shift: bool, streaming: bool) -> InputAction {
+pub fn apply_input_edit(
+    draft: &mut String,
+    caret: &mut usize,
+    key: &str,
+    key_char: Option<&str>,
+    shift: bool,
+    streaming: bool,
+) -> InputAction {
     if streaming {
         return InputAction::None;
     }
@@ -1379,7 +1748,10 @@ pub fn apply_input_edit(draft: &mut String, caret: &mut usize, key: &str, key_ch
 }
 
 fn char_byte_index(s: &str, n: usize) -> usize {
-    s.char_indices().nth(n).map(|(index, _)| index).unwrap_or(s.len())
+    s.char_indices()
+        .nth(n)
+        .map(|(index, _)| index)
+        .unwrap_or(s.len())
 }
 
 fn insert_at(s: &mut String, caret: &mut usize, character: char) {
@@ -1404,7 +1776,10 @@ pub fn plan_progress(plan: &[PlanStep]) -> (usize, usize) {
 }
 
 pub fn child_status_counts(children: &[ChildTask]) -> (usize, usize) {
-    let running = children.iter().filter(|child| child.status == "running").count();
+    let running = children
+        .iter()
+        .filter(|child| child.status == "running")
+        .count();
     (running, children.len())
 }
 
@@ -1416,18 +1791,30 @@ mod tests {
     fn editor_supports_unicode_and_newline_semantics() {
         let mut draft = "hé".to_string();
         let mut caret = 2;
-        assert_eq!(apply_input_edit(&mut draft, &mut caret, "space", None, false, false), InputAction::None);
+        assert_eq!(
+            apply_input_edit(&mut draft, &mut caret, "space", None, false, false),
+            InputAction::None
+        );
         assert_eq!(draft, "hé ");
-        assert_eq!(apply_input_edit(&mut draft, &mut caret, "enter", None, true, false), InputAction::None);
+        assert_eq!(
+            apply_input_edit(&mut draft, &mut caret, "enter", None, true, false),
+            InputAction::None
+        );
         assert_eq!(draft, "hé \n");
-        assert_eq!(apply_input_edit(&mut draft, &mut caret, "enter", None, false, false), InputAction::Send);
+        assert_eq!(
+            apply_input_edit(&mut draft, &mut caret, "enter", None, false, false),
+            InputAction::Send
+        );
     }
 
     #[test]
     fn streaming_blocks_editor_mutations() {
         let mut draft = "hello".to_string();
         let mut caret = 5;
-        assert_eq!(apply_input_edit(&mut draft, &mut caret, "x", Some("x"), false, true), InputAction::None);
+        assert_eq!(
+            apply_input_edit(&mut draft, &mut caret, "x", Some("x"), false, true),
+            InputAction::None
+        );
         assert_eq!(draft, "hello");
     }
 
@@ -1435,6 +1822,12 @@ mod tests {
     fn formatting_and_progress_are_compact() {
         assert_eq!(format_tokens(0), "0");
         assert_eq!(format_tokens(1_250), "1.2k");
-        assert_eq!(plan_progress(&[PlanStep { label: "a".into(), status: "complete".into() }]), (1, 1));
+        assert_eq!(
+            plan_progress(&[PlanStep {
+                label: "a".into(),
+                status: "complete".into()
+            }]),
+            (1, 1)
+        );
     }
 }

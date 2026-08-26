@@ -261,13 +261,25 @@ impl Workspace {
         Self {
             projects: vec![
                 active_project,
-                project("webmcp", "WebMCP Challenge Hackathon", "Micro-factory Order Desk"),
+                project(
+                    "webmcp",
+                    "WebMCP Challenge Hackathon",
+                    "Micro-factory Order Desk",
+                ),
                 project("openputty", "OpenPutty", "Plan OpenPutty architecture"),
-                project("cabinet-linux", "Cabinet-Linux", "Ship the Linux portable build"),
+                project(
+                    "cabinet-linux",
+                    "Cabinet-Linux",
+                    "Ship the Linux portable build",
+                ),
                 project("praxis", "Praxis", "Continue Praxis development"),
                 project("asi-agent", "ASI-Agent", "Review the development runtime"),
                 project("type-agent", "Type Agent", "Finish TypeScript parity"),
-                project("fluid-harness", "Fluid-Harness", "Design the next harness slice"),
+                project(
+                    "fluid-harness",
+                    "Fluid-Harness",
+                    "Design the next harness slice",
+                ),
                 project("pi-rust", "pi-rust", "Finish pi-rust conversion"),
             ],
         }
@@ -464,8 +476,13 @@ mod tests {
     #[test]
     fn demo_workspace_contains_reference_shell_projects() {
         let workspace = Workspace::demo();
-        assert_eq!(workspace.projects.first().map(|p| p.name.as_str()), Some("Codex-App-GPUI"));
-        assert!(workspace.all_tasks().any(|(_, task)| task.title == "Achieve Codex App GPUI parity"));
+        assert_eq!(
+            workspace.projects.first().map(|p| p.name.as_str()),
+            Some("Codex-App-GPUI")
+        );
+        assert!(workspace
+            .all_tasks()
+            .any(|(_, task)| task.title == "Achieve Codex App GPUI parity"));
     }
 
     #[test]

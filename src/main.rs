@@ -26,7 +26,10 @@ fn main() {
         return;
     }
 
-    let snapshot = persistence::load().ok().flatten().unwrap_or_else(Snapshot::demo);
+    let snapshot = persistence::load()
+        .ok()
+        .flatten()
+        .unwrap_or_else(Snapshot::demo);
     Application::new().run(move |app: &mut App| {
         app.activate(true);
         let window = WindowOptions {

@@ -16,9 +16,11 @@ pub fn root(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
         .flex_col()
         .bg(theme::BG_BASE)
         .text_color(theme::TEXT)
-        .on_key_down(window.listener_for(&cx.entity(), |this, event, window, cx| {
-            this.handle_global_key(event, window, cx);
-        }))
+        .on_key_down(
+            window.listener_for(&cx.entity(), |this, event, window, cx| {
+                this.handle_global_key(event, window, cx);
+            }),
+        )
         .child(menu_bar())
         .child(
             div()
@@ -94,7 +96,12 @@ fn sidebar(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) ->
                 .items_center()
                 .px_2()
                 .gap_2()
-                .child(div().text_size(rems(0.95)).text_color(theme::TEXT).child("Codex⌄"))
+                .child(
+                    div()
+                        .text_size(rems(0.95))
+                        .text_color(theme::TEXT)
+                        .child("Codex⌄"),
+                )
                 .child(div().flex_1().child(""))
                 .child(icon_button(
                     "sidebar-search",
@@ -245,13 +252,21 @@ fn search_box(state: &AppState, window: &mut Window, cx: &mut Context<AppState>)
                 .track_focus(&state.search_focus)
                 .tab_index(0)
                 .cursor_text()
-                .child(if state.query.is_empty() { "Search tasks…".into() } else { state.query.clone() })
-                .on_click(window.listener_for(&cx.entity(), |this, _event, window, _cx| {
-                    window.focus(&this.search_focus);
-                }))
-                .on_key_down(window.listener_for(&cx.entity(), |this, event, window, cx| {
-                    this.handle_search_key(event, window, cx);
-                })),
+                .child(if state.query.is_empty() {
+                    "Search tasks…".into()
+                } else {
+                    state.query.clone()
+                })
+                .on_click(
+                    window.listener_for(&cx.entity(), |this, _event, window, _cx| {
+                        window.focus(&this.search_focus);
+                    }),
+                )
+                .on_key_down(
+                    window.listener_for(&cx.entity(), |this, event, window, cx| {
+                        this.handle_search_key(event, window, cx);
+                    }),
+                ),
         )
         .child(icon_button(
             "search-close",
@@ -281,10 +296,24 @@ fn nav_item(
         .px_2()
         .rounded_md()
         .cursor_pointer()
-        .bg(if active { Hsla::from(theme::BG_SELECTED) } else { gpui::transparent_black() })
+        .bg(if active {
+            Hsla::from(theme::BG_SELECTED)
+        } else {
+            gpui::transparent_black()
+        })
         .text_color(theme::text_color(active))
         .text_size(rems(0.82))
-        .child(div().w(px(17.0)).text_center().text_color(if active { theme::TEXT } else { theme::TEXT_MUTED }).child(icon))
+        .child(
+            div()
+                .w(px(17.0))
+                .text_center()
+                .text_color(if active {
+                    theme::TEXT
+                } else {
+                    theme::TEXT_MUTED
+                })
+                .child(icon),
+        )
         .child(label)
         .on_click(listener)
         .hover(|style| style.bg(theme::BG_HOVER).text_color(theme::TEXT))
@@ -296,7 +325,9 @@ fn project_row(
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     div()
-        .id(ElementId::Name(format!("project-row-{}", project.id).into()))
+        .id(ElementId::Name(
+            format!("project-row-{}", project.id).into(),
+        ))
         .h(px(28.0))
         .flex()
         .items_center()
@@ -305,8 +336,16 @@ fn project_row(
         .rounded_md()
         .cursor_pointer()
         .text_size(rems(0.78))
-        .text_color(if active { theme::TEXT } else { theme::TEXT_MUTED })
-        .child(div().text_color(theme::TEXT_FAINT).child(if project.collapsed { "▸" } else { "⌄" }))
+        .text_color(if active {
+            theme::TEXT
+        } else {
+            theme::TEXT_MUTED
+        })
+        .child(
+            div()
+                .text_color(theme::TEXT_FAINT)
+                .child(if project.collapsed { "▸" } else { "⌄" }),
+        )
         .child(div().text_color(theme::TEXT_MUTED).child("▱"))
         .child(project.name.clone())
         .on_click(listener)
@@ -322,7 +361,11 @@ fn task_row(
 ) -> Stateful<Div> {
     let active = state.selected_project == project_id && state.selected_task == task.id;
     let task_id = task.id.clone();
-    let status_color = if task.status == "running" { theme::ACCENT } else { theme::TEXT_FAINT };
+    let status_color = if task.status == "running" {
+        theme::ACCENT
+    } else {
+        theme::TEXT_FAINT
+    };
     div()
         .id(ElementId::Name(format!("task-row-{}", task.id).into()))
         .min_h(px(30.0))
@@ -335,19 +378,39 @@ fn task_row(
         .py_1()
         .rounded_md()
         .cursor_pointer()
-        .bg(if active { Hsla::from(theme::BG_SELECTED) } else { gpui::transparent_black() })
-        .text_color(if active { theme::TEXT } else { theme::TEXT_MUTED })
+        .bg(if active {
+            Hsla::from(theme::BG_SELECTED)
+        } else {
+            gpui::transparent_black()
+        })
+        .text_color(if active {
+            theme::TEXT
+        } else {
+            theme::TEXT_MUTED
+        })
         .text_size(rems(0.76))
-        .child(div().size_2().rounded_full().bg(status_color).flex_shrink_0())
+        .child(
+            div()
+                .size_2()
+                .rounded_full()
+                .bg(status_color)
+                .flex_shrink_0(),
+        )
         .child(div().flex_1().truncate().child(task.title.clone()))
         .children((task.status == "running").then(|| div().text_color(theme::ACCENT).child("•")))
-        .on_click(window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
-            this.select_task(project_id.clone(), task_id.clone(), cx);
-        }))
+        .on_click(
+            window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                this.select_task(project_id.clone(), task_id.clone(), cx);
+            }),
+        )
         .hover(|style| style.bg(theme::BG_HOVER).text_color(theme::TEXT))
 }
 
-fn recent_tasks(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
+fn recent_tasks(
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
     let rows = state
         .workspace
         .all_tasks()
@@ -361,11 +424,21 @@ fn recent_tasks(state: &AppState, window: &mut Window, cx: &mut Context<AppState
         .flex()
         .flex_col()
         .gap_1()
-        .child(div().px_2().text_size(rems(0.72)).text_color(theme::TEXT_FAINT).child("Recents"))
+        .child(
+            div()
+                .px_2()
+                .text_size(rems(0.72))
+                .text_color(theme::TEXT_FAINT)
+                .child("Recents"),
+        )
         .children(rows)
 }
 
-fn account_footer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
+fn account_footer(
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
     div()
         .id("account-footer")
         .h(px(42.0))
@@ -388,7 +461,12 @@ fn account_footer(state: &AppState, window: &mut Window, cx: &mut Context<AppSta
                 .text_color(theme::TEXT)
                 .child("MU"),
         )
-        .child(div().flex_1().text_color(theme::TEXT_MUTED).child("mustbearnold"))
+        .child(
+            div()
+                .flex_1()
+                .text_color(theme::TEXT_MUTED)
+                .child("mustbearnold"),
+        )
         .child(icon_button(
             "account-help",
             "?",
@@ -397,9 +475,14 @@ fn account_footer(state: &AppState, window: &mut Window, cx: &mut Context<AppSta
                 this.notify_success("Codex App GPUI help", cx);
             }),
         ))
-        .children((state.connection != crate::state::ConnectionState::Demo).then(|| {
-            div().text_size(rems(0.6)).text_color(theme::SUCCESS).child("●")
-        }))
+        .children(
+            (state.connection != crate::state::ConnectionState::Demo).then(|| {
+                div()
+                    .text_size(rems(0.6))
+                    .text_color(theme::SUCCESS)
+                    .child("●")
+            }),
+        )
 }
 
 fn main_panel(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
@@ -414,20 +497,46 @@ fn main_panel(state: &AppState, window: &mut Window, cx: &mut Context<AppState>)
         .child(thread_header(state, window, cx))
         .child(match state.route {
             Route::Task => thread_view(state, window, cx),
-            Route::PullRequests => destination_view("Pull requests", "Review branches and change requests from your projects", &["No pull requests need attention"]),
-            Route::Sites => destination_view("Sites", "Open connected sites and hosted project surfaces", &["No sites configured yet"]),
-            Route::Scheduled => destination_view("Scheduled", "Automations and recurring Codex tasks", &["No scheduled tasks"]),
-            Route::Plugins => destination_view("Plugins", "Installed capabilities and available extensions", &["Codex App Tools", "Browser Control", "Data Analytics"]),
+            Route::PullRequests => destination_view(
+                "Pull requests",
+                "Review branches and change requests from your projects",
+                &["No pull requests need attention"],
+            ),
+            Route::Sites => destination_view(
+                "Sites",
+                "Open connected sites and hosted project surfaces",
+                &["No sites configured yet"],
+            ),
+            Route::Scheduled => destination_view(
+                "Scheduled",
+                "Automations and recurring Codex tasks",
+                &["No scheduled tasks"],
+            ),
+            Route::Plugins => destination_view(
+                "Plugins",
+                "Installed capabilities and available extensions",
+                &["Codex App Tools", "Browser Control", "Data Analytics"],
+            ),
             Route::Settings => settings_view(state, window, cx),
         })
 }
 
-fn thread_header(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
+fn thread_header(
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
     let (eyebrow, title) = match state.route {
         Route::Settings => ("Codex".to_string(), "Settings".to_string()),
         Route::Task => (
-            state.current_project().map(|project| project.name.clone()).unwrap_or_else(|| "Codex".into()),
-            state.current_task().map(|task| task.title.clone()).unwrap_or_else(|| "New task".into()),
+            state
+                .current_project()
+                .map(|project| project.name.clone())
+                .unwrap_or_else(|| "Codex".into()),
+            state
+                .current_task()
+                .map(|task| task.title.clone())
+                .unwrap_or_else(|| "New task".into()),
         ),
         Route::PullRequests => ("Codex".into(), "Pull requests".into()),
         Route::Sites => ("Codex".into(), "Sites".into()),
@@ -450,20 +559,35 @@ fn thread_header(state: &AppState, window: &mut Window, cx: &mut Context<AppStat
             .text_size(rems(0.82))
             .text_color(theme::TEXT)
             .child(render_with_caret(&state.rename_draft, state.rename_caret))
-            .on_click(window.listener_for(&cx.entity(), |this, _event, window, _cx| {
-                window.focus(&this.rename_focus);
-            }))
-            .on_key_down(window.listener_for(&cx.entity(), |this, event, _window, cx| {
-                this.handle_rename_key(event, cx);
-            }))
+            .on_click(
+                window.listener_for(&cx.entity(), |this, _event, window, _cx| {
+                    window.focus(&this.rename_focus);
+                }),
+            )
+            .on_key_down(
+                window.listener_for(&cx.entity(), |this, event, _window, cx| {
+                    this.handle_rename_key(event, cx);
+                }),
+            )
     } else {
         div()
             .id("title-view")
             .flex()
             .flex_col()
             .gap_0p5()
-            .child(div().text_size(rems(0.72)).text_color(theme::TEXT_FAINT).child(eyebrow))
-            .child(div().text_size(rems(0.82)).text_color(theme::TEXT).truncate().child(title))
+            .child(
+                div()
+                    .text_size(rems(0.72))
+                    .text_color(theme::TEXT_FAINT)
+                    .child(eyebrow),
+            )
+            .child(
+                div()
+                    .text_size(rems(0.82))
+                    .text_color(theme::TEXT)
+                    .truncate()
+                    .child(title),
+            )
     };
     div()
         .id("thread-header")
@@ -474,11 +598,19 @@ fn thread_header(state: &AppState, window: &mut Window, cx: &mut Context<AppStat
         .px_4()
         .border_b_1()
         .border_color(theme::BORDER)
-        .child(div().text_color(theme::TEXT_MUTED).text_size(rems(0.8)).child("▱"))
+        .child(
+            div()
+                .text_color(theme::TEXT_MUTED)
+                .text_size(rems(0.8))
+                .child("▱"),
+        )
         .child(title_view)
         .child(div().flex_1().child(""))
         .children((state.route == Route::Task).then(|| {
-            div().text_size(rems(0.7)).text_color(theme::TEXT_FAINT).child(state.connection.label())
+            div()
+                .text_size(rems(0.7))
+                .text_color(theme::TEXT_FAINT)
+                .child(state.connection.label())
         }))
         .child(text_button(
             "header-share",
@@ -523,26 +655,50 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
         .rounded_lg()
         .shadow_lg()
         .children([
-            menu_action("menu-rename", "Rename task", window.listener_for(&cx.entity(), |this, _event, window, cx| {
-                this.begin_rename(window, cx);
-            })),
-            menu_action("menu-fork", "Fork task", window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                this.fork_current(cx);
-            })),
-            menu_action("menu-archive", "Archive task", window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                this.archive_current(cx);
-            })),
-            menu_action("menu-delete", "Delete task", window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                this.delete_current(cx);
-            })),
-            menu_action("menu-settings", "Open settings", window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                this.open_settings(SettingsPage::General, cx);
-            })),
+            menu_action(
+                "menu-rename",
+                "Rename task",
+                window.listener_for(&cx.entity(), |this, _event, window, cx| {
+                    this.begin_rename(window, cx);
+                }),
+            ),
+            menu_action(
+                "menu-fork",
+                "Fork task",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.fork_current(cx);
+                }),
+            ),
+            menu_action(
+                "menu-archive",
+                "Archive task",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.archive_current(cx);
+                }),
+            ),
+            menu_action(
+                "menu-delete",
+                "Delete task",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.delete_current(cx);
+                }),
+            ),
+            menu_action(
+                "menu-settings",
+                "Open settings",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.open_settings(SettingsPage::General, cx);
+                }),
+            ),
         ])
         .children((state.route == Route::Task && state.streaming).then(|| {
-            menu_action("menu-stop", "Stop turn", window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                this.stop_turn(cx);
-            }))
+            menu_action(
+                "menu-stop",
+                "Stop turn",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.stop_turn(cx);
+                }),
+            )
         }))
 }
 
@@ -580,7 +736,12 @@ fn thread_view(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
         .child(composer(state, window, cx))
 }
 
-fn thread_entries(task: &Task, state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
+fn thread_entries(
+    task: &Task,
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
     let (complete, total) = plan_progress(&task.plan);
     let (running_children, total_children) = child_status_counts(&task.children);
     div()
@@ -612,12 +773,26 @@ fn thread_entries(task: &Task, state: &AppState, window: &mut Window, cx: &mut C
                 .gap_2()
                 .text_size(rems(0.72))
                 .text_color(theme::TEXT_FAINT)
-                .child(format!("{} subtask{} · {} active", total_children, if total_children == 1 { "" } else { "s" }, running_children))
+                .child(format!(
+                    "{} subtask{} · {} active",
+                    total_children,
+                    if total_children == 1 { "" } else { "s" },
+                    running_children
+                ))
         }))
-        .children(task.entries.iter().map(|entry| entry_view(entry, state, window, cx)))
+        .children(
+            task.entries
+                .iter()
+                .map(|entry| entry_view(entry, state, window, cx)),
+        )
 }
 
-fn entry_view(entry: &Entry, _state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
+fn entry_view(
+    entry: &Entry,
+    _state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
     match entry {
         Entry::User { text, time, .. } => div()
             .id(ElementId::Name(format!("entry-user-{}", text.len()).into()))
@@ -634,27 +809,65 @@ fn entry_view(entry: &Entry, _state: &AppState, window: &mut Window, cx: &mut Co
                     .text_color(theme::TEXT)
                     .whitespace_normal()
                     .child(text.clone())
-                    .child(div().mt_2().text_size(rems(0.64)).text_color(theme::TEXT_FAINT).child(time.clone())),
+                    .child(
+                        div()
+                            .mt_2()
+                            .text_size(rems(0.64))
+                            .text_color(theme::TEXT_FAINT)
+                            .child(time.clone()),
+                    ),
             ),
         Entry::Assistant { text, time, .. } => div()
-            .id(ElementId::Name(format!("entry-assistant-{}", text.len()).into()))
+            .id(ElementId::Name(
+                format!("entry-assistant-{}", text.len()).into(),
+            ))
             .flex()
             .flex_col()
             .gap_2()
             .max_w(px(760.0))
-            .child(div().text_size(rems(0.72)).text_color(theme::TEXT_FAINT).child("Codex"))
-            .child(div().text_size(rems(0.9)).text_color(theme::TEXT).whitespace_normal().child(text.clone()))
-            .child(div().text_size(rems(0.64)).text_color(theme::TEXT_FAINT).child(time.clone())),
-        Entry::Reasoning { text, collapsed, .. } => div()
-            .id(ElementId::Name(format!("entry-reasoning-{}", text.len()).into()))
+            .child(
+                div()
+                    .text_size(rems(0.72))
+                    .text_color(theme::TEXT_FAINT)
+                    .child("Codex"),
+            )
+            .child(
+                div()
+                    .text_size(rems(0.9))
+                    .text_color(theme::TEXT)
+                    .whitespace_normal()
+                    .child(text.clone()),
+            )
+            .child(
+                div()
+                    .text_size(rems(0.64))
+                    .text_color(theme::TEXT_FAINT)
+                    .child(time.clone()),
+            ),
+        Entry::Reasoning {
+            text, collapsed, ..
+        } => div()
+            .id(ElementId::Name(
+                format!("entry-reasoning-{}", text.len()).into(),
+            ))
             .flex()
             .items_center()
             .gap_2()
             .text_size(rems(0.74))
             .text_color(theme::TEXT_FAINT)
-            .child(if *collapsed { "▸ reasoning" } else { "▾ reasoning" })
+            .child(if *collapsed {
+                "▸ reasoning"
+            } else {
+                "▾ reasoning"
+            })
             .child(text.clone()),
-        Entry::Tool { name, status, detail, output, .. } => div()
+        Entry::Tool {
+            name,
+            status,
+            detail,
+            output,
+            ..
+        } => div()
             .id(ElementId::Name(format!("entry-tool-{}", name).into()))
             .bg(theme::BG_SURFACE)
             .border_1()
@@ -672,23 +885,97 @@ fn entry_view(entry: &Entry, _state: &AppState, window: &mut Window, cx: &mut Co
                     .border_color(theme::BORDER)
                     .text_size(rems(0.75))
                     .child(div().text_color(theme::ACCENT).child("⌁"))
-                    .child(div().flex_1().text_color(theme::TEXT_MUTED).child(name.clone()))
-                    .child(div().text_color(if status == "complete" { theme::SUCCESS } else { theme::ACCENT }).child(status.clone())),
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(theme::TEXT_MUTED)
+                            .child(name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_color(if status == "complete" {
+                                theme::SUCCESS
+                            } else {
+                                theme::ACCENT
+                            })
+                            .child(status.clone()),
+                    ),
             )
-            .child(div().px_3().py_2().text_size(rems(0.78)).text_color(theme::TEXT_MUTED).child(detail.clone()))
-            .children((!output.is_empty()).then(|| div().px_3().pb_3().text_size(rems(0.72)).text_color(theme::TEXT_FAINT).child(output.clone()))),
-        Entry::Code { language, code, output, exit_code, .. } => div()
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .text_size(rems(0.78))
+                    .text_color(theme::TEXT_MUTED)
+                    .child(detail.clone()),
+            )
+            .children((!output.is_empty()).then(|| {
+                div()
+                    .px_3()
+                    .pb_3()
+                    .text_size(rems(0.72))
+                    .text_color(theme::TEXT_FAINT)
+                    .child(output.clone())
+            })),
+        Entry::Code {
+            language,
+            code,
+            output,
+            exit_code,
+            ..
+        } => div()
             .id(ElementId::Name(format!("entry-code-{}", language).into()))
             .bg(theme::CODE_BG)
             .border_1()
             .border_color(theme::BORDER)
             .rounded_lg()
             .overflow_hidden()
-            .child(div().px_3().py_2().text_size(rems(0.72)).text_color(theme::TEXT_FAINT).border_b_1().border_color(theme::BORDER).child(language.clone()))
-            .child(div().px_3().py_3().text_size(rems(0.75)).text_color(theme::TEXT_MUTED).whitespace_normal().child(code.clone()))
-            .children((!output.is_empty()).then(|| div().px_3().py_2().text_size(rems(0.72)).text_color(theme::TEXT).child(output.clone())))
-            .children(exit_code.map(|code| div().px_3().pb_3().text_size(rems(0.68)).text_color(if code == 0 { theme::SUCCESS } else { theme::DANGER }).child(format!("exit {code}")))),
-        Entry::Diff { path, additions, deletions, summary, .. } => div()
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .text_size(rems(0.72))
+                    .text_color(theme::TEXT_FAINT)
+                    .border_b_1()
+                    .border_color(theme::BORDER)
+                    .child(language.clone()),
+            )
+            .child(
+                div()
+                    .px_3()
+                    .py_3()
+                    .text_size(rems(0.75))
+                    .text_color(theme::TEXT_MUTED)
+                    .whitespace_normal()
+                    .child(code.clone()),
+            )
+            .children((!output.is_empty()).then(|| {
+                div()
+                    .px_3()
+                    .py_2()
+                    .text_size(rems(0.72))
+                    .text_color(theme::TEXT)
+                    .child(output.clone())
+            }))
+            .children(exit_code.map(|code| {
+                div()
+                    .px_3()
+                    .pb_3()
+                    .text_size(rems(0.68))
+                    .text_color(if code == 0 {
+                        theme::SUCCESS
+                    } else {
+                        theme::DANGER
+                    })
+                    .child(format!("exit {code}"))
+            })),
+        Entry::Diff {
+            path,
+            additions,
+            deletions,
+            summary,
+            ..
+        } => div()
             .id(ElementId::Name(format!("entry-diff-{}", path).into()))
             .bg(theme::BG_SURFACE)
             .border_1()
@@ -698,34 +985,105 @@ fn entry_view(entry: &Entry, _state: &AppState, window: &mut Window, cx: &mut Co
             .py_2()
             .text_size(rems(0.76))
             .child(div().text_color(theme::TEXT).child(path.clone()))
-            .child(div().mt_1().text_color(theme::TEXT_MUTED).child(summary.clone()))
-            .child(div().mt_2().text_color(theme::SUCCESS).child(format!("+{additions}")))
-            .child(div().text_color(theme::DANGER).child(format!("−{deletions}"))),
-        Entry::Approval { title, command, cwd, reason, requested, .. } => {
+            .child(
+                div()
+                    .mt_1()
+                    .text_color(theme::TEXT_MUTED)
+                    .child(summary.clone()),
+            )
+            .child(
+                div()
+                    .mt_2()
+                    .text_color(theme::SUCCESS)
+                    .child(format!("+{additions}")),
+            )
+            .child(
+                div()
+                    .text_color(theme::DANGER)
+                    .child(format!("−{deletions}")),
+            ),
+        Entry::Approval {
+            title,
+            command,
+            cwd,
+            reason,
+            requested,
+            ..
+        } => {
             let requested = *requested;
             div()
-                .id(ElementId::Name(format!("entry-approval-{}", command.len()).into()))
+                .id(ElementId::Name(
+                    format!("entry-approval-{}", command.len()).into(),
+                ))
                 .bg(theme::BG_SURFACE)
                 .border_1()
-                .border_color(if requested { theme::WARNING } else { theme::BORDER })
+                .border_color(if requested {
+                    theme::WARNING
+                } else {
+                    theme::BORDER
+                })
                 .rounded_lg()
                 .p_3()
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(div().text_color(theme::WARNING).text_size(rems(0.78)).child(if requested { "Approval required" } else { "Approval resolved" }))
-                .child(div().text_color(theme::TEXT).text_size(rems(0.84)).child(title.clone()))
-                .child(div().bg(theme::CODE_BG).rounded_md().px_2().py_2().text_size(rems(0.72)).text_color(theme::TEXT_MUTED).child(command.clone()))
-                .child(div().text_size(rems(0.68)).text_color(theme::TEXT_FAINT).child(format!("{} · {}", cwd, reason)))
+                .child(
+                    div()
+                        .text_color(theme::WARNING)
+                        .text_size(rems(0.78))
+                        .child(if requested {
+                            "Approval required"
+                        } else {
+                            "Approval resolved"
+                        }),
+                )
+                .child(
+                    div()
+                        .text_color(theme::TEXT)
+                        .text_size(rems(0.84))
+                        .child(title.clone()),
+                )
+                .child(
+                    div()
+                        .bg(theme::CODE_BG)
+                        .rounded_md()
+                        .px_2()
+                        .py_2()
+                        .text_size(rems(0.72))
+                        .text_color(theme::TEXT_MUTED)
+                        .child(command.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(rems(0.68))
+                        .text_color(theme::TEXT_FAINT)
+                        .child(format!("{} · {}", cwd, reason)),
+                )
                 .children(requested.then(|| {
                     div()
                         .flex()
                         .gap_2()
-                        .child(text_button("approval-allow", "Allow", window.listener_for(&cx.entity(), |this, _event, _window, cx| this.approve_current(true, cx))))
-                        .child(text_button("approval-deny", "Deny", window.listener_for(&cx.entity(), |this, _event, _window, cx| this.approve_current(false, cx))))
+                        .child(text_button(
+                            "approval-allow",
+                            "Allow",
+                            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                                this.approve_current(true, cx)
+                            }),
+                        ))
+                        .child(text_button(
+                            "approval-deny",
+                            "Deny",
+                            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                                this.approve_current(false, cx)
+                            }),
+                        ))
                 }))
         }
-        Entry::Attachment { name, attachment_kind, .. } => div()
+        Entry::Attachment {
+            name,
+            attachment_kind,
+            ..
+        } => div()
             .id(ElementId::Name(format!("entry-attachment-{}", name).into()))
             .flex()
             .items_center()
@@ -739,9 +1097,15 @@ fn entry_view(entry: &Entry, _state: &AppState, window: &mut Window, cx: &mut Co
             .text_size(rems(0.76))
             .child(div().text_color(theme::WARNING).child("▧"))
             .child(name.clone())
-            .child(div().text_color(theme::TEXT_FAINT).child(attachment_kind.clone())),
+            .child(
+                div()
+                    .text_color(theme::TEXT_FAINT)
+                    .child(attachment_kind.clone()),
+            ),
         Entry::System { text, .. } => div()
-            .id(ElementId::Name(format!("entry-system-{}", text.len()).into()))
+            .id(ElementId::Name(
+                format!("entry-system-{}", text.len()).into(),
+            ))
             .w_full()
             .text_center()
             .text_size(rems(0.72))
@@ -765,123 +1129,173 @@ fn streaming_status() -> Stateful<Div> {
 fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
     let task = state.current_task();
     let running = state.streaming || state.busy;
-    let model = task.map(|task| task.model.clone()).unwrap_or_else(|| state.settings.default_model.clone());
-    let reasoning = task.map(|task| task.reasoning.clone()).unwrap_or_else(|| state.settings.default_reasoning.clone());
+    let model = task
+        .map(|task| task.model.clone())
+        .unwrap_or_else(|| state.settings.default_model.clone());
+    let reasoning = task
+        .map(|task| task.reasoning.clone())
+        .unwrap_or_else(|| state.settings.default_reasoning.clone());
     let usage = task.map(|task| task.usage).unwrap_or_default();
-    let placeholder = if task.is_none() { "Select a task to start…" } else if running { "Codex is working…" } else { "Do anything" };
+    let placeholder = if task.is_none() {
+        "Select a task to start…"
+    } else if running {
+        "Codex is working…"
+    } else {
+        "Do anything"
+    };
 
-    div()
-        .id("composer")
-        .w_full()
-        .px_8()
-        .pb_5()
-        .child(
-            div()
-                .w_full()
-                .max_w(px(theme::COMPOSER_MAX_WIDTH))
-                .mx_auto()
-                .bg(theme::BG_SURFACE)
-                .border_1()
-                .border_color(theme::BORDER)
-                .rounded_xl()
-                .p_2()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .children((!state.attachments.is_empty()).then(|| {
-                    div()
-                        .flex()
-                        .gap_1()
-                        .children(state.attachments.iter().enumerate().map(|(index, name)| {
-                            div()
-                                .id(ElementId::Name(format!("attachment-pill-{index}").into()))
-                                .bg(theme::ACCENT_SOFT)
-                                .rounded_md()
-                                .px_2()
-                                .py_1()
-                                .text_size(rems(0.68))
-                                .text_color(theme::TEXT)
-                                .child(format!("▧ {name}"))
-                        }))
-                }))
-                .child(
-                    div()
-                        .id("composer-input")
-                        .min_h(px(62.0))
-                        .max_h(px(220.0))
-                        .w_full()
-                        .px_2()
-                        .py_2()
-                        .cursor_text()
-                        .track_focus(&state.input_focus)
-                        .tab_index(0)
-                        .text_size(rems(0.88))
-                        .text_color(theme::TEXT)
-                        .whitespace_normal()
-                        .child(if state.draft.is_empty() { placeholder.to_string() } else { render_with_caret(&state.draft, state.caret) })
-                        .on_click(window.listener_for(&cx.entity(), |this, _event, window, _cx| {
+    div().id("composer").w_full().px_8().pb_5().child(
+        div()
+            .w_full()
+            .max_w(px(theme::COMPOSER_MAX_WIDTH))
+            .mx_auto()
+            .bg(theme::BG_SURFACE)
+            .border_1()
+            .border_color(theme::BORDER)
+            .rounded_xl()
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children((!state.attachments.is_empty()).then(|| {
+                div()
+                    .flex()
+                    .gap_1()
+                    .children(state.attachments.iter().enumerate().map(|(index, name)| {
+                        div()
+                            .id(ElementId::Name(format!("attachment-pill-{index}").into()))
+                            .bg(theme::ACCENT_SOFT)
+                            .rounded_md()
+                            .px_2()
+                            .py_1()
+                            .text_size(rems(0.68))
+                            .text_color(theme::TEXT)
+                            .child(format!("▧ {name}"))
+                    }))
+            }))
+            .child(
+                div()
+                    .id("composer-input")
+                    .min_h(px(62.0))
+                    .max_h(px(220.0))
+                    .w_full()
+                    .px_2()
+                    .py_2()
+                    .cursor_text()
+                    .track_focus(&state.input_focus)
+                    .tab_index(0)
+                    .text_size(rems(0.88))
+                    .text_color(theme::TEXT)
+                    .whitespace_normal()
+                    .child(if state.draft.is_empty() {
+                        placeholder.to_string()
+                    } else {
+                        render_with_caret(&state.draft, state.caret)
+                    })
+                    .on_click(
+                        window.listener_for(&cx.entity(), |this, _event, window, _cx| {
                             window.focus(&this.input_focus);
-                        }))
-                        .on_key_down(window.listener_for(&cx.entity(), |this, event, _window, cx| {
-                            this.handle_input_key(event, cx);
-                        })),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .child(icon_button(
-                            "composer-attach",
-                            "+",
-                            "Attach file",
-                            window.listener_for(&cx.entity(), |this, _event, _window, cx| this.add_attachment(cx)),
-                        ))
-                        .child(icon_button(
-                            "composer-mention",
-                            "@",
-                            "Mention file",
-                            window.listener_for(&cx.entity(), |this, _event, _window, cx| this.insert_mention(cx)),
-                        ))
-                        .child(text_button(
-                            "composer-mode",
-                            &state.composer_mode,
-                            window.listener_for(&cx.entity(), |this, _event, _window, cx| this.cycle_mode(cx)),
-                        ))
-                        .child(div().flex_1().child(""))
-                        .child(div().text_size(rems(0.66)).text_color(theme::TEXT_FAINT).child(format!("↑{} ↓{}", format_tokens(usage.input), format_tokens(usage.output))))
-                        .child(text_button(
-                            "composer-model",
-                            &model,
-                            window.listener_for(&cx.entity(), |this, _event, _window, cx| this.cycle_model(cx)),
-                        ))
-                        .child(text_button(
-                            "composer-reasoning",
-                            &format!("reasoning · {reasoning}"),
-                            window.listener_for(&cx.entity(), |this, _event, _window, cx| this.cycle_reasoning(cx)),
-                        ))
-                        .child(icon_button(
-                            "composer-mic",
-                            "♩",
-                            "Voice input",
-                            window.listener_for(&cx.entity(), |this, _event, _window, cx| this.notify_success("Voice input is available through the realtime adapter", cx)),
-                        ))
-                        .children(if running {
-                            Some(text_button(
-                                "composer-stop",
-                                "■",
-                                window.listener_for(&cx.entity(), |this, _event, _window, cx| this.stop_turn(cx)),
-                            ))
-                        } else {
-                            Some(text_button(
-                                "composer-send",
-                                "↑",
-                                window.listener_for(&cx.entity(), |this, _event, _window, cx| this.send(cx)),
-                            ))
                         }),
-                )
-                .child(div().text_size(rems(0.64)).text_color(theme::TEXT_FAINT).child("Enter to send · Shift+Enter for newline")),
-        )
+                    )
+                    .on_key_down(
+                        window.listener_for(&cx.entity(), |this, event, _window, cx| {
+                            this.handle_input_key(event, cx);
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(icon_button(
+                        "composer-attach",
+                        "+",
+                        "Attach file",
+                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                            this.add_attachment(cx)
+                        }),
+                    ))
+                    .child(icon_button(
+                        "composer-mention",
+                        "@",
+                        "Mention file",
+                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                            this.insert_mention(cx)
+                        }),
+                    ))
+                    .child(text_button(
+                        "composer-mode",
+                        &state.composer_mode,
+                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                            this.cycle_mode(cx)
+                        }),
+                    ))
+                    .child(div().flex_1().child(""))
+                    .child(
+                        div()
+                            .text_size(rems(0.66))
+                            .text_color(theme::TEXT_FAINT)
+                            .child(format!(
+                                "↑{} ↓{}{}",
+                                format_tokens(usage.input),
+                                format_tokens(usage.output),
+                                usage
+                                    .cache_rate()
+                                    .map(|rate| format!(" · cache {rate}%"))
+                                    .unwrap_or_default(),
+                            )),
+                    )
+                    .child(text_button(
+                        "composer-model",
+                        &model,
+                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                            this.cycle_model(cx)
+                        }),
+                    ))
+                    .child(text_button(
+                        "composer-reasoning",
+                        &format!("reasoning · {reasoning}"),
+                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                            this.cycle_reasoning(cx)
+                        }),
+                    ))
+                    .child(icon_button(
+                        "composer-mic",
+                        "♩",
+                        "Voice input",
+                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                            this.notify_success(
+                                "Voice input is available through the realtime adapter",
+                                cx,
+                            )
+                        }),
+                    ))
+                    .children(if running {
+                        Some(text_button(
+                            "composer-stop",
+                            "■",
+                            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                                this.stop_turn(cx)
+                            }),
+                        ))
+                    } else {
+                        Some(text_button(
+                            "composer-send",
+                            "↑",
+                            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                                this.send(cx)
+                            }),
+                        ))
+                    }),
+            )
+            .child(
+                div()
+                    .text_size(rems(0.64))
+                    .text_color(theme::TEXT_FAINT)
+                    .child("Enter to send · Shift+Enter for newline"),
+            ),
+    )
 }
 
 fn render_with_caret(text: &str, caret: usize) -> String {
@@ -891,7 +1305,11 @@ fn render_with_caret(text: &str, caret: usize) -> String {
     format!("{head}▍{tail}")
 }
 
-fn destination_view(title: &'static str, description: &'static str, cards: &[&'static str]) -> Stateful<Div> {
+fn destination_view(
+    title: &'static str,
+    description: &'static str,
+    cards: &[&'static str],
+) -> Stateful<Div> {
     div()
         .id(ElementId::Name(format!("destination-{title}").into()))
         .flex_1()
@@ -907,8 +1325,18 @@ fn destination_view(title: &'static str, description: &'static str, cards: &[&'s
                 .flex()
                 .flex_col()
                 .gap_5()
-                .child(div().text_size(rems(1.3)).font_weight(FontWeight::SEMIBOLD).child(title))
-                .child(div().text_size(rems(0.84)).text_color(theme::TEXT_MUTED).child(description))
+                .child(
+                    div()
+                        .text_size(rems(1.3))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(rems(0.84))
+                        .text_color(theme::TEXT_MUTED)
+                        .child(description),
+                )
                 .children(cards.iter().enumerate().map(|(index, card)| {
                     div()
                         .id(ElementId::Name(format!("destination-card-{index}").into()))
@@ -925,7 +1353,11 @@ fn destination_view(title: &'static str, description: &'static str, cards: &[&'s
         )
 }
 
-fn settings_view(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
+fn settings_view(
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
     div()
         .id("settings-view")
         .flex_1()
@@ -949,14 +1381,20 @@ fn settings_view(state: &AppState, window: &mut Window, cx: &mut Context<AppStat
                         page.icon(),
                         page.title(),
                         state.settings_page == page,
-                        window.listener_for(&cx.entity(), move |this, _event, _window, cx| this.select_settings_page(page, cx)),
+                        window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                            this.select_settings_page(page, cx)
+                        }),
                     )
                 })),
         )
         .child(settings_panel(state, window, cx))
 }
 
-fn settings_panel(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
+fn settings_panel(
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
     let page = state.settings_page;
     div()
         .id("settings-panel")
@@ -976,8 +1414,18 @@ fn settings_panel(state: &AppState, window: &mut Window, cx: &mut Context<AppSta
                 .flex()
                 .flex_col()
                 .gap_5()
-                .child(div().text_size(rems(1.25)).font_weight(FontWeight::SEMIBOLD).child(page.title()))
-                .child(div().text_size(rems(0.82)).text_color(theme::TEXT_MUTED).child(settings_description(page)))
+                .child(
+                    div()
+                        .text_size(rems(1.25))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(page.title()),
+                )
+                .child(
+                    div()
+                        .text_size(rems(0.82))
+                        .text_color(theme::TEXT_MUTED)
+                        .child(settings_description(page)),
+                )
                 .child(settings_page_body(page, state, window, cx)),
         )
 }
@@ -998,85 +1446,279 @@ fn settings_description(page: SettingsPage) -> &'static str {
     }
 }
 
-fn settings_page_body(page: SettingsPage, state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Div {
+fn settings_page_body(
+    page: SettingsPage,
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Div {
     match page {
         SettingsPage::General => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(setting_row("Default model", "Model used for new tasks", state.settings.default_model.clone(), None))
-            .child(setting_row("Reasoning effort", "Default thinking budget", state.settings.default_reasoning.clone(), None))
-            .child(setting_row("Approval mode", "When Codex asks before an external action", state.settings.approval_mode.clone(), None))
-            .child(setting_row("Sandbox", "Execution policy for workspace tasks", state.settings.sandbox_mode.clone(), None))
-            .child(setting_row("State file", "Local UI state is separate from CODEX_HOME", crate::persistence::state_path().display().to_string(), None)),
+            .child(setting_row(
+                "Default model",
+                "Model used for new tasks",
+                state.settings.default_model.clone(),
+                Some(Box::new(
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.cycle_model(cx)
+                    }),
+                )),
+            ))
+            .child(setting_row(
+                "Reasoning effort",
+                "Default thinking budget",
+                state.settings.default_reasoning.clone(),
+                Some(Box::new(
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.cycle_reasoning(cx)
+                    }),
+                )),
+            ))
+            .child(setting_row(
+                "Approval mode",
+                "When Codex asks before an external action",
+                state.settings.approval_mode.clone(),
+                Some(Box::new(
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.cycle_approval_mode(cx)
+                    }),
+                )),
+            ))
+            .child(setting_row(
+                "Sandbox",
+                "Execution policy for workspace tasks",
+                state.settings.sandbox_mode.clone(),
+                Some(Box::new(
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.cycle_sandbox_mode(cx)
+                    }),
+                )),
+            ))
+            .child(setting_row(
+                "State file",
+                "Local UI state is separate from CODEX_HOME",
+                crate::persistence::state_path().display().to_string(),
+                None,
+            )),
         SettingsPage::Account => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(setting_row("Signed in", "The local desktop account", "mustbearnold".into(), None))
-            .child(setting_row("Provider", "Authentication is delegated to Codex app-server", "OpenAI Codex".into(), None))
-            .child(setting_row("Data boundary", "Credentials never enter the UI snapshot", "Protected".into(), None)),
+            .child(setting_row(
+                "Signed in",
+                "The local desktop account",
+                "mustbearnold".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Provider",
+                "Authentication is delegated to Codex app-server",
+                "OpenAI Codex".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Data boundary",
+                "Credentials never enter the UI snapshot",
+                "Protected".into(),
+                None,
+            )),
         SettingsPage::Appearance => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(setting_row("Theme", "Use the system appearance", state.settings.theme.clone(), None))
-            .child(setting_row("Font size", "Base interface size", format!("{} px", state.settings.font_size), None))
-            .child(setting_row("Motion", "Respect reduced-motion preferences", "Enabled".into(), None)),
+            .child(setting_row(
+                "Theme",
+                "Use the system appearance",
+                state.settings.theme.clone(),
+                None,
+            ))
+            .child(setting_row(
+                "Font size",
+                "Base interface size",
+                format!("{} px", state.settings.font_size),
+                None,
+            ))
+            .child(setting_row(
+                "Motion",
+                "Respect reduced-motion preferences",
+                "Enabled".into(),
+                None,
+            )),
         SettingsPage::Notifications => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(setting_toggle("Task notifications", "Show turn and approval notifications", state.settings.notifications, "notifications", state, window, cx))
-            .child(setting_toggle("Sound effects", "Play a subtle completion sound", state.settings.sound_effects, "sound", state, window, cx)),
+            .child(setting_toggle(
+                "Task notifications",
+                "Show turn and approval notifications",
+                state.settings.notifications,
+                "notifications",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_toggle(
+                "Sound effects",
+                "Play a subtle completion sound",
+                state.settings.sound_effects,
+                "sound",
+                state,
+                window,
+                cx,
+            )),
         SettingsPage::Apps => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(setting_row("Browser control", "Open and inspect browser tabs", "Available".into(), None))
-            .child(setting_row("Work with apps", "Desktop app connectors", "Available".into(), None))
-            .child(setting_row("Sites", "Hosted surfaces", "Not configured".into(), None)),
+            .child(setting_row(
+                "Browser control",
+                "Open and inspect browser tabs",
+                "Available".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Work with apps",
+                "Desktop app connectors",
+                "Available".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Sites",
+                "Hosted surfaces",
+                "Not configured".into(),
+                None,
+            )),
         SettingsPage::Mcp => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(setting_row("codex_apps", "Codex app tools", "Connected".into(), None))
-            .child(setting_row("browser", "Browser interaction tools", "Available".into(), None))
-            .child(setting_row("Add server", "Configure an MCP server", "＋".into(), None)),
+            .child(setting_row(
+                "codex_apps",
+                "Codex app tools",
+                "Connected".into(),
+                None,
+            ))
+            .child(setting_row(
+                "browser",
+                "Browser interaction tools",
+                "Available".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Add server",
+                "Configure an MCP server",
+                "＋".into(),
+                None,
+            )),
         SettingsPage::Skills => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(setting_row("Installed skills", "Skills loaded for this environment", "System + workspace".into(), None))
-            .child(setting_row("Refresh", "Reload skill metadata", "↻".into(), None)),
+            .child(setting_row(
+                "Installed skills",
+                "Skills loaded for this environment",
+                "System + workspace".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Refresh",
+                "Reload skill metadata",
+                "↻".into(),
+                None,
+            )),
         SettingsPage::Plugins => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(setting_row("Codex App Tools", "Thread, task, and automation controls", "Enabled".into(), None))
-            .child(setting_row("Marketplaces", "Plugin sources", "Curated".into(), None)),
+            .child(setting_row(
+                "Codex App Tools",
+                "Thread, task, and automation controls",
+                "Enabled".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Marketplaces",
+                "Plugin sources",
+                "Curated".into(),
+                None,
+            )),
         SettingsPage::Keybindings => div()
             .flex()
             .flex_col()
             .gap_2()
             .child(setting_row("⌘ K", "Search tasks", "⌘ K".into(), None))
-            .child(setting_row("Enter", "Send composer message", "Enter".into(), None))
-            .child(setting_row("Shift + Enter", "Insert a newline", "Shift + Enter".into(), None))
-            .child(setting_row("Escape", "Close menus and search", "Escape".into(), None)),
+            .child(setting_row(
+                "Enter",
+                "Send composer message",
+                "Enter".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Shift + Enter",
+                "Insert a newline",
+                "Shift + Enter".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Escape",
+                "Close menus and search",
+                "Escape".into(),
+                None,
+            )),
         SettingsPage::Worktrees => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(setting_row("Environment", "Where a task executes", "Local workspace".into(), None))
-            .child(setting_row("Worktree root", "Optional root for isolated branches", if state.settings.worktree_root.is_empty() { "Not configured".into() } else { state.settings.worktree_root.clone() }, None))
-            .child(setting_row("Auto setup", "Prepare dependencies when entering a worktree", "On".into(), None)),
+            .child(setting_row(
+                "Environment",
+                "Where a task executes",
+                "Local workspace".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Worktree root",
+                "Optional root for isolated branches",
+                if state.settings.worktree_root.is_empty() {
+                    "Not configured".into()
+                } else {
+                    state.settings.worktree_root.clone()
+                },
+                None,
+            ))
+            .child(setting_row(
+                "Auto setup",
+                "Prepare dependencies when entering a worktree",
+                "On".into(),
+                None,
+            )),
         SettingsPage::Git => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(setting_row("Attribution", "Preserve Codex authorship metadata", "Enabled".into(), None))
-            .child(setting_row("Repository", "Current project path", state.current_project().map(|project| project.path.clone()).unwrap_or_default(), None))
-            .child(setting_row("Review", "Open changes in the native review surface", "Available".into(), None)),
+            .child(setting_row(
+                "Attribution",
+                "Preserve Codex authorship metadata",
+                "Enabled".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Repository",
+                "Current project path",
+                state
+                    .current_project()
+                    .map(|project| project.path.clone())
+                    .unwrap_or_default(),
+                None,
+            ))
+            .child(setting_row(
+                "Review",
+                "Open changes in the native review surface",
+                "Available".into(),
+                None,
+            )),
     }
 }
 
@@ -1087,7 +1729,9 @@ fn setting_row(
     listener: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
 ) -> Stateful<Div> {
     let row = div()
-        .id(ElementId::Name(format!("setting-{}", title.replace(' ', "-")).into()))
+        .id(ElementId::Name(
+            format!("setting-{}", title.replace(' ', "-")).into(),
+        ))
         .flex()
         .items_center()
         .gap_3()
@@ -1097,8 +1741,33 @@ fn setting_row(
         .rounded_lg()
         .px_4()
         .py_3()
-        .child(div().flex_1().flex().flex_col().gap_1().child(div().text_size(rems(0.82)).text_color(theme::TEXT).child(title)).child(div().text_size(rems(0.7)).text_color(theme::TEXT_FAINT).child(description)))
-        .child(div().max_w(px(260.0)).text_size(rems(0.75)).text_color(theme::TEXT_MUTED).truncate().child(value));
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(rems(0.82))
+                        .text_color(theme::TEXT)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(rems(0.7))
+                        .text_color(theme::TEXT_FAINT)
+                        .child(description),
+                ),
+        )
+        .child(
+            div()
+                .max_w(px(260.0))
+                .text_size(rems(0.75))
+                .text_color(theme::TEXT_MUTED)
+                .truncate()
+                .child(value),
+        );
     if let Some(listener) = listener {
         row.on_click(listener)
     } else {
@@ -1106,7 +1775,15 @@ fn setting_row(
     }
 }
 
-fn setting_toggle(title: &'static str, description: &'static str, enabled: bool, key: &'static str, _state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
+fn setting_toggle(
+    title: &'static str,
+    description: &'static str,
+    enabled: bool,
+    key: &'static str,
+    _state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
     div()
         .id(ElementId::Name(format!("setting-toggle-{key}").into()))
         .flex()
@@ -1119,9 +1796,40 @@ fn setting_toggle(title: &'static str, description: &'static str, enabled: bool,
         .px_4()
         .py_3()
         .cursor_pointer()
-        .child(div().flex_1().flex().flex_col().gap_1().child(div().text_size(rems(0.82)).text_color(theme::TEXT).child(title)).child(div().text_size(rems(0.7)).text_color(theme::TEXT_FAINT).child(description)))
-        .child(div().text_size(rems(0.74)).text_color(if enabled { theme::SUCCESS } else { theme::TEXT_FAINT }).child(if enabled { "On" } else { "Off" }))
-        .on_click(window.listener_for(&cx.entity(), move |this, _event, _window, cx| this.toggle_bool_setting(key, cx)))
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(rems(0.82))
+                        .text_color(theme::TEXT)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(rems(0.7))
+                        .text_color(theme::TEXT_FAINT)
+                        .child(description),
+                ),
+        )
+        .child(
+            div()
+                .text_size(rems(0.74))
+                .text_color(if enabled {
+                    theme::SUCCESS
+                } else {
+                    theme::TEXT_FAINT
+                })
+                .child(if enabled { "On" } else { "Off" }),
+        )
+        .on_click(
+            window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                this.toggle_bool_setting(key, cx)
+            }),
+        )
         .hover(|style| style.bg(theme::BG_HOVER))
 }
 

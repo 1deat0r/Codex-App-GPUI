@@ -24,7 +24,11 @@ pub struct Snapshot {
 impl Snapshot {
     pub fn demo() -> Self {
         let workspace = Workspace::demo();
-        let project = workspace.projects.first().map(|project| project.id.clone()).unwrap_or_default();
+        let project = workspace
+            .projects
+            .first()
+            .map(|project| project.id.clone())
+            .unwrap_or_default();
         let task = workspace
             .projects
             .first()
@@ -59,7 +63,9 @@ pub fn load() -> Result<Option<Snapshot>> {
 
 pub fn load_from(path: &Path) -> Result<Option<Snapshot>> {
     match fs::read_to_string(path) {
-        Ok(contents) => Ok(Some(serde_json::from_str(&contents).context("decode Codex App GPUI state")?)),
+        Ok(contents) => Ok(Some(
+            serde_json::from_str(&contents).context("decode Codex App GPUI state")?,
+        )),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| format!("read state at {}", path.display())),
     }
@@ -71,18 +77,27 @@ pub fn save(snapshot: &Snapshot) -> Result<()> {
 
 pub fn save_to(path: &Path, snapshot: &Snapshot) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).with_context(|| format!("create state directory {}", parent.display()))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create state directory {}", parent.display()))?;
     let temporary = path.with_extension("json.tmp");
     let contents = serde_json::to_string_pretty(snapshot).context("encode Codex App GPUI state")?;
-    fs::write(&temporary, format!("{contents}\n")).with_context(|| format!("write state at {}", temporary.display()))?;
+    fs::write(&temporary, format!("{contents}\n"))
+        .with_context(|| format!("write state at {}", temporary.display()))?;
     fs::rename(&temporary, path).with_context(|| format!("commit state at {}", path.display()))?;
     Ok(())
 }
 
 pub fn contains_credentials(contents: &str) -> bool {
-    ["sk-", "ghp_", "github_pat_", "Bearer ", "refresh_token", "access_token"]
-        .iter()
-        .any(|needle| contents.contains(needle))
+    [
+        "sk-",
+        "ghp_",
+        "github_pat_",
+        "Bearer ",
+        "refresh_token",
+        "access_token",
+    ]
+    .iter()
+    .any(|needle| contents.contains(needle))
 }
 
 #[cfg(test)]
@@ -91,7 +106,8 @@ mod tests {
 
     #[test]
     fn snapshot_round_trip_uses_atomic_file() {
-        let directory = std::env::temp_dir().join(format!("codex-app-gpui-test-{}", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("codex-app-gpui-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         let path = directory.join("state.json");
         let original = Snapshot::demo();
