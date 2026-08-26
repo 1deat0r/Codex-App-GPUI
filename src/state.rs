@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AsyncApp, Context, FocusHandle, KeyDownEvent, WeakEntity, Window};
+use gpui::{AsyncApp, Context, FocusHandle, KeyDownEvent, PathPromptOptions, WeakEntity, Window};
 use serde_json::{json, Value};
 
 use crate::model::{
@@ -928,6 +928,39 @@ impl AppState {
     pub fn add_attachment(&mut self, cx: &mut Context<Self>) {
         self.attachments.push("attachment".into());
         self.notify_success("Attachment staged", cx);
+    }
+
+    pub fn pick_attachments(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = receiver.await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(Ok(Some(paths))) if !paths.is_empty() => {
+                        for path in paths {
+                            let label = path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .filter(|name| !name.is_empty())
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| path.display().to_string());
+                            this.attachments.push(label);
+                        }
+                        this.notify_success("Files attached", cx);
+                    }
+                    Ok(Ok(Some(_))) | Ok(Ok(None)) => {}
+                    Ok(Err(error)) => this.fail(&format!("Attachment picker failed: {error}"), cx),
+                    Err(error) => this.fail(&format!("Attachment picker cancelled: {error}"), cx),
+                });
+            },
+        )
+        .detach();
     }
 
     pub fn insert_mention(&mut self, cx: &mut Context<Self>) {

@@ -1622,7 +1622,7 @@ fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                         "+",
                         "Attach file",
                         window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                            this.add_attachment(cx)
+                            this.pick_attachments(cx)
                         }),
                     ))
                     .child(icon_button(
