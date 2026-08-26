@@ -1,5 +1,6 @@
 //! UI state and interaction reducer for the native client.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -715,12 +716,14 @@ impl AppState {
         {
             project.collapsed = !project.collapsed;
         }
+        self.persist(cx);
         cx.notify();
     }
 
     pub fn send(&mut self, cx: &mut Context<Self>) {
         let text = self.draft.trim().to_string();
-        if text.is_empty() || self.streaming || self.busy {
+        let attachments = self.attachments.clone();
+        if (text.is_empty() && attachments.is_empty()) || self.streaming || self.busy {
             return;
         }
         let project_id = self.selected_project.clone();
@@ -728,14 +731,23 @@ impl AppState {
         let Some(task) = self.workspace.task_mut(&project_id, &task_id) else {
             return;
         };
-        if task.title == "New task" {
+        if task.title == "New task" && !text.is_empty() {
             task.title = Task::title_from_prompt(&text);
         }
-        task.entries.push(Entry::User {
-            id: format!("user-{}", task.entries.len() + 1),
-            text: text.clone(),
-            time: "Now".into(),
-        });
+        if !text.is_empty() {
+            task.entries.push(Entry::User {
+                id: format!("user-{}", task.entries.len() + 1),
+                text: text.clone(),
+                time: "Now".into(),
+            });
+        }
+        for (index, attachment) in attachments.iter().enumerate() {
+            task.entries.push(Entry::Attachment {
+                id: format!("attachment-{}-{}", task.entries.len() + 1, index),
+                name: attachment_name(attachment),
+                attachment_kind: attachment_kind(attachment).into(),
+            });
+        }
         task.status = "running".into();
         task.updated_at = "Now".into();
         self.draft.clear();
@@ -765,13 +777,14 @@ impl AppState {
                             .background_executor()
                             .spawn(async move {
                                 smol::unblock(move || {
-                                    client.turn_start_with_options(
+                                    client.turn_start_with_options_and_attachments(
                                         &task_id,
                                         &text,
                                         Some(&model),
                                         Some(&effort),
                                         cwd.as_deref(),
                                         Some(&approval_policy),
+                                        &attachments,
                                     )
                                 })
                                 .await
@@ -959,13 +972,7 @@ impl AppState {
                 let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
                     Ok(Ok(Some(paths))) if !paths.is_empty() => {
                         for path in paths {
-                            let label = path
-                                .file_name()
-                                .and_then(|name| name.to_str())
-                                .filter(|name| !name.is_empty())
-                                .map(str::to_owned)
-                                .unwrap_or_else(|| path.display().to_string());
-                            this.attachments.push(label);
+                            this.attachments.push(path.display().to_string());
                         }
                         this.notify_success("Files attached", cx);
                     }
@@ -2130,6 +2137,34 @@ fn replace_selection(
         *caret += text.chars().count();
     }
     *selection_anchor = None;
+}
+
+fn attachment_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| path.to_owned())
+}
+
+fn attachment_kind(path: &str) -> &'static str {
+    if is_image_path(path) {
+        "image"
+    } else {
+        "file"
+    }
+}
+
+fn is_image_path(path: &str) -> bool {
+    matches!(
+        Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("bmp" | "gif" | "jpeg" | "jpg" | "png" | "svg" | "webp")
+    )
 }
 
 fn char_byte_index(s: &str, n: usize) -> usize {

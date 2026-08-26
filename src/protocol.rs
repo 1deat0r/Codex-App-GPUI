@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -107,6 +108,16 @@ fn value_text(value: &Value) -> String {
         Value::Bool(value) => value.to_string(),
         _ => value.to_string(),
     }
+}
+
+fn is_image_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("bmp" | "gif" | "jpeg" | "jpg" | "png" | "svg" | "webp")
+    )
 }
 
 type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
@@ -385,9 +396,50 @@ impl AppServerClient {
         cwd: Option<&str>,
         approval_policy: Option<&str>,
     ) -> Result<Value> {
+        self.turn_start_with_options_and_attachments(
+            thread_id,
+            text,
+            model,
+            effort,
+            cwd,
+            approval_policy,
+            &[],
+        )
+    }
+
+    pub fn turn_start_with_options_and_attachments(
+        &self,
+        thread_id: &str,
+        text: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        cwd: Option<&str>,
+        approval_policy: Option<&str>,
+        attachments: &[String],
+    ) -> Result<Value> {
+        let mut input = Vec::with_capacity(attachments.len() + 1);
+        if !text.is_empty() || attachments.is_empty() {
+            input.push(json!({ "type": "text", "text": text }));
+        }
+        input.extend(attachments.iter().filter_map(|path| {
+            let path = Path::new(path);
+            if !path.is_absolute() {
+                return None;
+            }
+            let path_text = path.to_str()?;
+            if is_image_path(path) {
+                Some(json!({ "type": "localImage", "path": path_text }))
+            } else {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(path_text);
+                Some(json!({ "type": "mention", "name": name, "path": path_text }))
+            }
+        }));
         let mut params = json!({
             "threadId": thread_id,
-            "input": [{ "type": "text", "text": text }],
+            "input": input,
         });
         if let Some(model) = model.filter(|model| !model.is_empty()) {
             params["model"] = Value::String(model.into());
@@ -631,6 +683,39 @@ mod tests {
         let titled = ServerThread::from_value(&json!({ "id": "b", "title": "Titled" })).unwrap();
         assert_eq!(named.title, "Named");
         assert_eq!(titled.title, "Titled");
+    }
+
+    #[test]
+    fn turn_input_preserves_absolute_image_and_file_attachments() {
+        let input = b"{\"id\":1,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}\n";
+        let recorded = RecordingWriter::default();
+        let bytes = recorded.0.clone();
+        let client = AppServerClient::from_parts(Cursor::new(input), recorded);
+        let attachments = vec![
+            "/tmp/screenshot.png".to_string(),
+            "/tmp/notes.md".to_string(),
+            "attachment".to_string(),
+        ];
+
+        client
+            .turn_start_with_options_and_attachments(
+                "thread-1",
+                "Review these files",
+                None,
+                None,
+                None,
+                None,
+                &attachments,
+            )
+            .unwrap();
+
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        let request: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(request["params"]["input"][1]["type"], "localImage");
+        assert_eq!(request["params"]["input"][1]["path"], "/tmp/screenshot.png");
+        assert_eq!(request["params"]["input"][2]["type"], "mention");
+        assert_eq!(request["params"]["input"][2]["name"], "notes.md");
+        assert_eq!(request["params"]["input"].as_array().unwrap().len(), 3);
     }
 
     #[test]

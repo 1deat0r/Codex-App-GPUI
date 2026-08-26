@@ -2,6 +2,8 @@
 //! and settings. The implementation keeps controls close to the reference
 //! layout while making every primary affordance keyboard/click reachable.
 
+use std::path::Path;
+
 use gpui::*;
 
 use crate::model::{Entry, Route, SettingsPage, Task};
@@ -1569,6 +1571,11 @@ fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                     .flex()
                     .gap_1()
                     .children(state.attachments.iter().enumerate().map(|(index, name)| {
+                        let label = Path::new(name)
+                            .file_name()
+                            .and_then(|file_name| file_name.to_str())
+                            .filter(|file_name| !file_name.is_empty())
+                            .unwrap_or(name);
                         div()
                             .id(ElementId::Name(format!("attachment-pill-{index}").into()))
                             .bg(theme::ACCENT_SOFT)
@@ -1577,7 +1584,7 @@ fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                             .py_1()
                             .text_size(rems(0.68))
                             .text_color(theme::TEXT)
-                            .child(format!("▧ {name}"))
+                            .child(format!("▧ {label}"))
                     }))
             }))
             .child(
