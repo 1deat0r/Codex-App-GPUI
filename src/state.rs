@@ -54,6 +54,7 @@ pub struct AppState {
     pub query: String,
     pub draft: String,
     pub caret: usize,
+    pub selection_anchor: Option<usize>,
     pub streaming: bool,
     pub busy: bool,
     pub composer_mode: String,
@@ -70,6 +71,8 @@ pub struct AppState {
     pub rename_open: bool,
     pub rename_draft: String,
     pub rename_caret: usize,
+    pub rename_selection_anchor: Option<usize>,
+    pub query_selection_anchor: Option<usize>,
     event_loop_started: bool,
     pub root_focus: FocusHandle,
     pub input_focus: FocusHandle,
@@ -90,6 +93,7 @@ impl AppState {
             query: String::new(),
             draft: String::new(),
             caret: 0,
+            selection_anchor: None,
             streaming: false,
             busy: false,
             composer_mode: "Agent".into(),
@@ -106,6 +110,8 @@ impl AppState {
             rename_open: false,
             rename_draft: String::new(),
             rename_caret: 0,
+            rename_selection_anchor: None,
+            query_selection_anchor: None,
             event_loop_started: false,
             root_focus: cx.focus_handle(),
             input_focus: cx.focus_handle(),
@@ -573,10 +579,13 @@ impl AppState {
         self.search_open = !self.search_open;
         if self.search_open {
             self.caret = self.query.chars().count();
+            self.query_selection_anchor = None;
             window.focus(&self.search_focus);
         } else {
             self.query.clear();
             self.caret = self.draft.chars().count();
+            self.query_selection_anchor = None;
+            self.selection_anchor = None;
         }
         cx.notify();
     }
@@ -587,12 +596,15 @@ impl AppState {
         self.route = Route::Task;
         self.draft.clear();
         self.caret = 0;
+        self.selection_anchor = None;
+        self.query_selection_anchor = None;
         self.attachments.clear();
         self.menu_open = false;
         self.app_menu = None;
         self.view_open = false;
         self.rename_open = false;
         self.rename_draft.clear();
+        self.rename_selection_anchor = None;
         self.streaming = self
             .current_task()
             .map(|task| task.status == "running")
@@ -728,6 +740,7 @@ impl AppState {
         task.updated_at = "Now".into();
         self.draft.clear();
         self.caret = 0;
+        self.selection_anchor = None;
         self.busy = false;
         self.streaming = true;
         self.attachments.clear();
@@ -869,6 +882,7 @@ impl AppState {
             task.model = next.clone();
         }
         self.settings.default_model = next.clone();
+        self.persist(cx);
         self.notify_success(&format!("Model: {next}"), cx);
     }
 
@@ -886,6 +900,7 @@ impl AppState {
             task.reasoning = next.clone();
         }
         self.settings.default_reasoning = next.clone();
+        self.persist(cx);
         self.notify_success(&format!("Reasoning: {next}"), cx);
     }
 
@@ -964,7 +979,12 @@ impl AppState {
     }
 
     pub fn insert_mention(&mut self, cx: &mut Context<Self>) {
-        insert_at(&mut self.draft, &mut self.caret, '@');
+        replace_selection(
+            &mut self.draft,
+            &mut self.caret,
+            &mut self.selection_anchor,
+            "@",
+        );
         cx.notify();
     }
 
@@ -980,6 +1000,7 @@ impl AppState {
         };
         self.rename_draft = task.title.clone();
         self.rename_caret = self.rename_draft.chars().count();
+        self.rename_selection_anchor = None;
         self.rename_open = true;
         self.menu_open = false;
         window.focus(&self.rename_focus);
@@ -990,6 +1011,7 @@ impl AppState {
         self.rename_open = false;
         self.rename_draft.clear();
         self.rename_caret = 0;
+        self.rename_selection_anchor = None;
         cx.notify();
     }
 
@@ -1065,6 +1087,7 @@ impl AppState {
     pub fn clear_draft(&mut self, cx: &mut Context<Self>) {
         self.draft.clear();
         self.caret = 0;
+        self.selection_anchor = None;
         self.attachments.clear();
         self.notify_success("Composer cleared", cx);
     }
@@ -1072,6 +1095,7 @@ impl AppState {
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_collapsed = !self.sidebar_collapsed;
         self.view_open = false;
+        self.persist(cx);
         cx.notify();
     }
 
@@ -1247,15 +1271,25 @@ impl AppState {
             self.begin_rename(window, cx);
             return true;
         }
+        if handle_editor_shortcut(
+            &mut self.draft,
+            &mut self.caret,
+            &mut self.selection_anchor,
+            key,
+            cx,
+        ) {
+            return true;
+        }
         if self.handle_command_shortcut(key, window, cx) {
             return true;
         }
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
             return false;
         }
-        let action = apply_input_edit(
+        let action = apply_input_edit_with_selection(
             &mut self.draft,
             &mut self.caret,
+            &mut self.selection_anchor,
             &key.key,
             key.key_char.as_deref(),
             key.modifiers.shift,
@@ -1347,6 +1381,7 @@ impl AppState {
         if key.key == "escape" {
             self.search_open = false;
             self.query.clear();
+            self.query_selection_anchor = None;
             window.focus(&self.input_focus);
             cx.notify();
             return true;
@@ -1354,12 +1389,22 @@ impl AppState {
         if self.handle_command_shortcut(key, window, cx) {
             return true;
         }
+        if handle_editor_shortcut(
+            &mut self.query,
+            &mut self.caret,
+            &mut self.query_selection_anchor,
+            key,
+            cx,
+        ) {
+            return true;
+        }
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
             return false;
         }
-        let _ = apply_input_edit(
+        let _ = apply_input_edit_with_selection(
             &mut self.query,
             &mut self.caret,
+            &mut self.query_selection_anchor,
             &key.key,
             key.key_char.as_deref(),
             key.modifiers.shift,
@@ -1384,12 +1429,22 @@ impl AppState {
             window.focus(&self.input_focus);
             return;
         }
+        if handle_editor_shortcut(
+            &mut self.rename_draft,
+            &mut self.rename_caret,
+            &mut self.rename_selection_anchor,
+            key,
+            cx,
+        ) {
+            return;
+        }
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
             return;
         }
-        if apply_input_edit(
+        if apply_input_edit_with_selection(
             &mut self.rename_draft,
             &mut self.rename_caret,
+            &mut self.rename_selection_anchor,
             &key.key,
             key.key_char.as_deref(),
             key.modifiers.shift,
@@ -1895,42 +1950,186 @@ pub fn apply_input_edit(
     shift: bool,
     streaming: bool,
 ) -> InputAction {
+    let mut selection_anchor = None;
+    apply_input_edit_with_selection(
+        draft,
+        caret,
+        &mut selection_anchor,
+        key,
+        key_char,
+        shift,
+        streaming,
+    )
+}
+
+pub fn apply_input_edit_with_selection(
+    draft: &mut String,
+    caret: &mut usize,
+    selection_anchor: &mut Option<usize>,
+    key: &str,
+    key_char: Option<&str>,
+    shift: bool,
+    streaming: bool,
+) -> InputAction {
     if streaming {
         return InputAction::None;
     }
     let len = draft.chars().count();
     *caret = (*caret).min(len);
+    if let Some(anchor) = selection_anchor.as_mut() {
+        *anchor = (*anchor).min(len);
+    }
     match key {
-        "enter" if shift => insert_at(draft, caret, '\n'),
+        "enter" if shift => replace_selection(draft, caret, selection_anchor, "\n"),
         "enter" => return InputAction::Send,
         "backspace" => {
-            if *caret > 0 {
+            if !delete_selection(draft, caret, selection_anchor) && *caret > 0 {
                 *caret -= 1;
                 let byte = char_byte_index(draft, *caret);
                 draft.remove(byte);
             }
         }
         "delete" => {
-            if *caret < len {
+            if !delete_selection(draft, caret, selection_anchor) && *caret < len {
                 let byte = char_byte_index(draft, *caret);
                 draft.remove(byte);
             }
         }
-        "space" => insert_at(draft, caret, ' '),
-        "tab" => insert_at(draft, caret, '\t'),
-        "left" => *caret = caret.saturating_sub(1),
-        "right" => *caret = (*caret + 1).min(len),
-        "home" => *caret = 0,
-        "end" => *caret = len,
+        "space" => replace_selection(draft, caret, selection_anchor, " "),
+        "tab" => replace_selection(draft, caret, selection_anchor, "\t"),
+        "left" => move_caret(
+            caret,
+            selection_anchor,
+            caret.saturating_sub(1),
+            shift,
+            true,
+        ),
+        "right" => move_caret(caret, selection_anchor, (*caret + 1).min(len), shift, false),
+        "home" => move_caret(caret, selection_anchor, 0, shift, true),
+        "end" => move_caret(caret, selection_anchor, len, shift, false),
         _ => {
             if let Some(chars) = key_char {
-                for ch in chars.chars() {
-                    insert_at(draft, caret, ch);
-                }
+                replace_selection(draft, caret, selection_anchor, chars);
             }
         }
     }
     InputAction::None
+}
+
+fn handle_editor_shortcut(
+    draft: &mut String,
+    caret: &mut usize,
+    selection_anchor: &mut Option<usize>,
+    key: &gpui::Keystroke,
+    cx: &mut Context<AppState>,
+) -> bool {
+    if !(key.modifiers.platform || key.modifiers.control)
+        || key.modifiers.alt
+        || key.modifiers.shift
+    {
+        return false;
+    }
+    match key.key.as_str() {
+        "a" => {
+            let len = draft.chars().count();
+            *caret = len;
+            *selection_anchor = (len > 0).then_some(0);
+            cx.notify();
+            true
+        }
+        "c" => {
+            if let Some(text) = selected_text(draft, *caret, *selection_anchor) {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            }
+            true
+        }
+        "x" => {
+            if let Some(text) = selected_text(draft, *caret, *selection_anchor) {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                delete_selection(draft, caret, selection_anchor);
+                cx.notify();
+            }
+            true
+        }
+        "v" => {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                replace_selection(draft, caret, selection_anchor, &text);
+                cx.notify();
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn move_caret(
+    caret: &mut usize,
+    selection_anchor: &mut Option<usize>,
+    target: usize,
+    shift: bool,
+    toward_start: bool,
+) {
+    if shift {
+        let anchor = selection_anchor.unwrap_or(*caret);
+        *caret = target;
+        *selection_anchor = (anchor != target).then_some(anchor);
+    } else if let Some(anchor) = selection_anchor.take() {
+        *caret = if toward_start {
+            anchor.min(*caret)
+        } else {
+            anchor.max(*caret)
+        };
+    } else {
+        *caret = target;
+    }
+}
+
+fn selection_bounds(caret: usize, selection_anchor: Option<usize>) -> Option<(usize, usize)> {
+    let anchor = selection_anchor?;
+    let start = anchor.min(caret);
+    let end = anchor.max(caret);
+    (start < end).then_some((start, end))
+}
+
+fn selected_text(draft: &str, caret: usize, selection_anchor: Option<usize>) -> Option<String> {
+    let (start, end) = selection_bounds(caret, selection_anchor)?;
+    Some(draft.chars().skip(start).take(end - start).collect())
+}
+
+fn delete_selection(
+    draft: &mut String,
+    caret: &mut usize,
+    selection_anchor: &mut Option<usize>,
+) -> bool {
+    let Some((start, end)) = selection_bounds(*caret, *selection_anchor) else {
+        *selection_anchor = None;
+        return false;
+    };
+    let start_byte = char_byte_index(draft, start);
+    let end_byte = char_byte_index(draft, end);
+    draft.replace_range(start_byte..end_byte, "");
+    *caret = start;
+    *selection_anchor = None;
+    true
+}
+
+fn replace_selection(
+    draft: &mut String,
+    caret: &mut usize,
+    selection_anchor: &mut Option<usize>,
+    text: &str,
+) {
+    if let Some((start, end)) = selection_bounds(*caret, *selection_anchor) {
+        let start_byte = char_byte_index(draft, start);
+        let end_byte = char_byte_index(draft, end);
+        draft.replace_range(start_byte..end_byte, text);
+        *caret = start + text.chars().count();
+    } else {
+        let byte = char_byte_index(draft, *caret);
+        draft.insert_str(byte, text);
+        *caret += text.chars().count();
+    }
+    *selection_anchor = None;
 }
 
 fn char_byte_index(s: &str, n: usize) -> usize {
@@ -1938,12 +2137,6 @@ fn char_byte_index(s: &str, n: usize) -> usize {
         .nth(n)
         .map(|(index, _)| index)
         .unwrap_or(s.len())
-}
-
-fn insert_at(s: &mut String, caret: &mut usize, character: char) {
-    let byte = char_byte_index(s, *caret);
-    s.insert(byte, character);
-    *caret += 1;
 }
 
 pub fn format_tokens(tokens: u64) -> String {
@@ -2002,6 +2195,81 @@ mod tests {
             InputAction::None
         );
         assert_eq!(draft, "hello");
+    }
+
+    #[test]
+    fn selection_editing_replaces_unicode_ranges_and_collapses_on_navigation() {
+        let mut draft = "héllo".to_string();
+        let mut caret = draft.chars().count();
+        let mut selection_anchor = Some(1);
+        assert_eq!(
+            apply_input_edit_with_selection(
+                &mut draft,
+                &mut caret,
+                &mut selection_anchor,
+                "x",
+                Some("X"),
+                false,
+                false,
+            ),
+            InputAction::None
+        );
+        assert_eq!(draft, "hX");
+        assert_eq!(caret, 2);
+        assert_eq!(selection_anchor, None);
+
+        selection_anchor = Some(0);
+        caret = draft.chars().count();
+        apply_input_edit_with_selection(
+            &mut draft,
+            &mut caret,
+            &mut selection_anchor,
+            "left",
+            None,
+            false,
+            false,
+        );
+        assert_eq!(caret, 0);
+        assert_eq!(selection_anchor, None);
+    }
+
+    #[test]
+    fn shift_navigation_extends_and_backspace_removes_selection() {
+        let mut draft = "hello".to_string();
+        let mut caret = 1;
+        let mut selection_anchor = None;
+        apply_input_edit_with_selection(
+            &mut draft,
+            &mut caret,
+            &mut selection_anchor,
+            "right",
+            None,
+            true,
+            false,
+        );
+        apply_input_edit_with_selection(
+            &mut draft,
+            &mut caret,
+            &mut selection_anchor,
+            "right",
+            None,
+            true,
+            false,
+        );
+        assert_eq!(selection_anchor, Some(1));
+        assert_eq!(caret, 3);
+        apply_input_edit_with_selection(
+            &mut draft,
+            &mut caret,
+            &mut selection_anchor,
+            "backspace",
+            None,
+            false,
+            false,
+        );
+        assert_eq!(draft, "hlo");
+        assert_eq!(caret, 1);
+        assert_eq!(selection_anchor, None);
     }
 
     #[test]
