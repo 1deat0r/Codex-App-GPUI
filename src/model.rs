@@ -85,6 +85,15 @@ pub struct Task {
     pub goal: Option<Goal>,
     #[serde(default)]
     pub children: Vec<ChildTask>,
+    #[serde(default)]
+    pub queue: Vec<QueuedInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueuedInput {
+    pub id: String,
+    #[serde(default)]
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -419,6 +428,7 @@ impl Workspace {
                 usage: Usage::default(),
                 goal: None,
                 children: Vec::new(),
+                queue: Vec::new(),
             }],
         };
         Self {
@@ -561,6 +571,7 @@ impl Task {
                     status: "running".into(),
                 },
             ],
+            queue: Vec::new(),
         }
     }
 

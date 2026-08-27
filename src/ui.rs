@@ -2025,6 +2025,7 @@ fn streaming_status() -> Stateful<Div> {
 
 fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
     let task = state.current_task();
+    let queued_inputs = task.map(|task| task.queue.clone()).unwrap_or_default();
     let running = state.streaming || state.busy;
     let model_id = task
         .map(|task| task.model.clone())
@@ -2092,6 +2093,41 @@ fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                                     ))
                                     .hover(|style| style.text_color(theme::text())),
                             )
+                    }))
+            }))
+            .children((!queued_inputs.is_empty()).then(|| {
+                div()
+                    .id("composer-queue")
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .bg(theme::bg_surface_2())
+                    .rounded_md()
+                    .children(queued_inputs.into_iter().map(|queued| {
+                        let queued_id = queued.id.clone();
+                        div()
+                            .id(ElementId::Name(
+                                format!("queued-input-{}", queued.id).into(),
+                            ))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_size(rems(0.68))
+                            .text_color(theme::text_muted())
+                            .child(format!("Queued · {}", queued.text))
+                            .child(div().flex_1().child(""))
+                            .child(text_button(
+                                ElementId::Name(format!("queued-remove-{queued_id}").into()),
+                                "×",
+                                window.listener_for(
+                                    &cx.entity(),
+                                    move |this, _event, _window, cx| {
+                                        this.remove_queued_input(queued_id.clone(), cx);
+                                    },
+                                ),
+                            ))
                     }))
             }))
             .child(

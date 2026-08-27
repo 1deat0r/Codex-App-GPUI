@@ -11,8 +11,8 @@ use gpui::{AsyncApp, Context, FocusHandle, KeyDownEvent, PathPromptOptions, Weak
 use serde_json::{json, Value};
 
 use crate::model::{
-    Automation, ChildTask, Entry, Goal, PlanStep, Project, Route, Settings, SettingsPage, Task,
-    Workspace,
+    Automation, ChildTask, Entry, Goal, PlanStep, Project, QueuedInput, Route, Settings,
+    SettingsPage, Task, Workspace,
 };
 use crate::persistence::{self, ShareArtifact, Snapshot};
 use crate::protocol::{AppServerClient, ServerThread};
@@ -1174,6 +1174,11 @@ impl AppState {
                     persist = true;
                 }
             }
+            "thread/queue/changed" => {
+                if let Some(thread_id) = thread_id {
+                    self.refresh_live_queue(thread_id.to_owned(), cx);
+                }
+            }
             "app/list/updated" => {
                 self.catalog.apps = named_values_from_data(&params, &["name", "displayName", "id"]);
                 self.catalog.installed_apps = self.catalog.apps.clone();
@@ -1370,6 +1375,40 @@ impl AppState {
         }
     }
 
+    fn refresh_live_queue(&mut self, thread_id: String, cx: &mut Context<Self>) {
+        let Some(client) = self.live_client.clone() else {
+            return;
+        };
+        let request_thread_id = thread_id.clone();
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || {
+                            client.thread_queue_list(&request_thread_id, None, None)
+                        })
+                        .await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(value) => {
+                        if let Some(task) = this.task_mut_by_id(&thread_id) {
+                            task.queue = queued_inputs_from_value(&value);
+                            this.persist(cx);
+                        }
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        this.fail(&format!("Could not refresh queued follow-ups: {error}"), cx)
+                    }
+                });
+            },
+        )
+        .detach();
+    }
+
     fn promote_pending_interaction(&mut self) {
         self.pending_interaction = self.pending_interactions.first().cloned();
     }
@@ -1505,6 +1544,7 @@ impl AppState {
             usage: Default::default(),
             goal: None,
             children: Vec::new(),
+            queue: Vec::new(),
         };
         if let Some(project) = self
             .workspace
@@ -1735,7 +1775,13 @@ impl AppState {
     pub fn send(&mut self, cx: &mut Context<Self>) {
         let text = self.draft.trim().to_string();
         let attachments = self.attachments.clone();
-        if (text.is_empty() && attachments.is_empty()) || self.streaming || self.busy {
+        if text.is_empty() && attachments.is_empty() {
+            return;
+        }
+        if self.streaming || self.busy {
+            if self.settings.queue_follow_ups {
+                self.queue_current_input(cx);
+            }
             return;
         }
         let project_id = self.selected_project.clone();
@@ -1783,6 +1829,7 @@ impl AppState {
                 let cwd = self.current_task().map(|task| task.path.clone());
                 let approval_policy = self.settings.approval_mode.clone();
                 let sandbox_policy = sandbox_policy_wire(&self.settings.sandbox_mode).to_owned();
+                let refresh_thread_id = task_id.clone();
                 let async_cx = cx.to_async();
                 cx.spawn(
                     move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
@@ -1808,6 +1855,7 @@ impl AppState {
                             .await;
                         let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
                             Ok(value) => {
+                                this.refresh_live_queue(refresh_thread_id, cx);
                                 this.active_turn_id = value
                                     .get("turn")
                                     .and_then(|turn| turn.get("id"))
@@ -1852,6 +1900,123 @@ impl AppState {
             .detach();
         }
         cx.notify();
+    }
+
+    pub fn queue_current_input(&mut self, cx: &mut Context<Self>) {
+        let text = self.draft.trim().to_owned();
+        let attachments = self.attachments.clone();
+        if text.is_empty() && attachments.is_empty() {
+            return;
+        }
+        let id = format!(
+            "queued-{}",
+            self.current_task()
+                .map(|task| task.queue.len() + 1)
+                .unwrap_or(1)
+        );
+        let display = if attachments.is_empty() {
+            text.clone()
+        } else if text.is_empty() {
+            attachments.join(", ")
+        } else {
+            format!("{text} · {} attachment(s)", attachments.len())
+        };
+        if let Some(task) = self.current_task_mut() {
+            task.queue.push(QueuedInput {
+                id: id.clone(),
+                text: display,
+            });
+        }
+        self.draft.clear();
+        self.caret = 0;
+        self.selection_anchor = None;
+        self.attachments.clear();
+        self.persist(cx);
+        if self.connection == ConnectionState::Live && self.selected_project == "live-codex" {
+            if let Some(client) = self.live_client.clone() {
+                let thread_id = self.selected_task.clone();
+                let refresh_thread_id = thread_id.clone();
+                let mut input = Vec::new();
+                if !text.is_empty() || attachments.is_empty() {
+                    input.push(json!({ "type": "text", "text": text }));
+                }
+                input.extend(attachments.iter().filter_map(|path| {
+                    let path = Path::new(path);
+                    let path_text = path.to_str()?;
+                    if is_image_path(path_text) {
+                        Some(json!({ "type": "localImage", "path": path_text }))
+                    } else {
+                        Some(json!({
+                            "type": "mention",
+                            "name": path.file_name().and_then(|name| name.to_str()).unwrap_or(path_text),
+                            "path": path_text,
+                        }))
+                    }
+                }));
+                let async_cx = cx.to_async();
+                cx.spawn(
+                    move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                        let result = async_cx
+                            .background_executor()
+                            .spawn(async move {
+                                smol::unblock(move || {
+                                    client.thread_queue_add(&thread_id, &id, json!(input))
+                                })
+                                .await
+                            })
+                            .await;
+                        let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                            Ok(_) => this.refresh_live_queue(refresh_thread_id, cx),
+                            Err(error) => {
+                                this.fail(&format!("Could not queue follow-up: {error}"), cx)
+                            }
+                        });
+                    },
+                )
+                .detach();
+            }
+        }
+        self.notify_success("Follow-up queued", cx);
+    }
+
+    pub fn remove_queued_input(&mut self, queued_id: String, cx: &mut Context<Self>) {
+        let thread_id = self.selected_task.clone();
+        let live =
+            self.connection == ConnectionState::Live && self.selected_project == "live-codex";
+        let Some(task) = self.current_task_mut() else {
+            return;
+        };
+        let before = task.queue.len();
+        task.queue.retain(|item| item.id != queued_id);
+        if before == task.queue.len() {
+            return;
+        }
+        self.persist(cx);
+        if live {
+            if let Some(client) = self.live_client.clone() {
+                let request_thread_id = thread_id.clone();
+                let request_queued_id = queued_id.clone();
+                let async_cx = cx.to_async();
+                cx.spawn(
+                    move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                        let result = smol::unblock(move || {
+                            client.thread_queue_delete(&request_thread_id, &request_queued_id)
+                        })
+                        .await;
+                        if let Err(error) = result {
+                            let _ = this.update(&mut async_cx.clone(), |this, cx| {
+                                this.fail(
+                                    &format!("Could not remove queued follow-up: {error}"),
+                                    cx,
+                                )
+                            });
+                        }
+                    },
+                )
+                .detach();
+            }
+        }
+        self.notify_success("Queued follow-up removed", cx);
     }
 
     pub fn stop_turn(&mut self, cx: &mut Context<Self>) {
@@ -2279,6 +2444,7 @@ impl AppState {
             usage: Default::default(),
             goal: None,
             children: Vec::new(),
+            queue: Vec::new(),
         };
         self.workspace.projects.push(Project {
             id: id.clone(),
@@ -3746,6 +3912,7 @@ fn task_from_server(thread: &ServerThread) -> Task {
         usage: Default::default(),
         goal: None,
         children: Vec::new(),
+        queue: Vec::new(),
     }
 }
 
@@ -3808,6 +3975,74 @@ fn string_field(value: &Value, names: &[&str]) -> String {
         .iter()
         .find_map(|name| value.get(*name).map(value_text))
         .unwrap_or_default()
+}
+
+fn queued_inputs_from_value(value: &Value) -> Vec<QueuedInput> {
+    let Some(submissions) = value
+        .get("data")
+        .or_else(|| value.get("queue"))
+        .or_else(|| value.get("items"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    submissions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, submission)| {
+            let id = string_field(submission, &["id", "queuedSubmissionId"]);
+            let id = if id.is_empty() {
+                format!("queued-{}", index + 1)
+            } else {
+                id
+            };
+            let text = queued_input_display(submission.get("input").unwrap_or(submission));
+            (!text.is_empty()).then_some(QueuedInput { id, text })
+        })
+        .collect()
+}
+
+fn queued_input_display(value: &Value) -> String {
+    let values = value
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(std::slice::from_ref(value));
+    values
+        .iter()
+        .filter_map(|item| {
+            let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
+            let text = match kind {
+                "text" => string_field(item, &["text"]),
+                "mention" | "skill" => {
+                    let name = string_field(item, &["name"]);
+                    if name.is_empty() {
+                        string_field(item, &["path"])
+                    } else {
+                        format!("@{name}")
+                    }
+                }
+                "localImage" | "localAudio" => {
+                    let path = string_field(item, &["path"]);
+                    if path.is_empty() {
+                        kind.to_owned()
+                    } else {
+                        format!("{kind}: {path}")
+                    }
+                }
+                "image" | "audio" => {
+                    let url = string_field(item, &["url"]);
+                    if url.is_empty() {
+                        kind.to_owned()
+                    } else {
+                        format!("{kind}: {url}")
+                    }
+                }
+                _ => value_text(item),
+            };
+            (!text.is_empty()).then_some(text)
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn safe_server_request_response(method: &str) -> Value {
@@ -4952,6 +5187,47 @@ mod tests {
             InputAction::Send
         );
         assert_eq!(draft, "hello\n");
+    }
+
+    #[test]
+    fn queued_submission_shapes_preserve_order_and_user_input_labels() {
+        let queued = queued_inputs_from_value(&json!({
+            "data": [
+                {
+                    "id": "server-1",
+                    "input": [
+                        { "type": "text", "text": "first" },
+                        { "type": "mention", "name": "README.md", "path": "/tmp/README.md" }
+                    ]
+                },
+                {
+                    "id": "server-2",
+                    "input": [{ "type": "localImage", "path": "/tmp/example.png" }]
+                }
+            ]
+        }));
+        assert_eq!(
+            queued,
+            vec![
+                QueuedInput {
+                    id: "server-1".into(),
+                    text: "first · @README.md".into(),
+                },
+                QueuedInput {
+                    id: "server-2".into(),
+                    text: "localImage: /tmp/example.png".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn queue_migration_defaults_missing_server_data_to_empty() {
+        assert!(queued_inputs_from_value(&json!({ "nextCursor": null })).is_empty());
+        assert_eq!(
+            queued_input_display(&json!({ "type": "text", "text": "single" })),
+            "single"
+        );
     }
 
     #[test]
