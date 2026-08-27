@@ -528,6 +528,117 @@ impl AppServerClient {
         self.request("thread/metadata/update", Value::Object(params))
     }
 
+    pub fn thread_section_move(
+        &self,
+        thread_id: &str,
+        section_id: Option<&str>,
+        before_thread_id: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "threadId": thread_id,
+            "sectionId": section_id,
+        });
+        if let Some(before_thread_id) = before_thread_id.filter(|value| !value.is_empty()) {
+            params["beforeThreadId"] = Value::String(before_thread_id.into());
+        }
+        self.request("thread/section/move", params)
+    }
+
+    pub fn thread_inject_items(&self, thread_id: &str, items: Value) -> Result<Value> {
+        self.request(
+            "thread/inject_items",
+            json!({ "threadId": thread_id, "items": items }),
+        )
+    }
+
+    pub fn thread_queue_add(
+        &self,
+        thread_id: &str,
+        client_user_message_id: &str,
+        input: Value,
+    ) -> Result<Value> {
+        self.request(
+            "thread/queue/add",
+            json!({
+                "threadId": thread_id,
+                "clientUserMessageId": client_user_message_id,
+                "input": input,
+            }),
+        )
+    }
+
+    pub fn thread_queue_list(
+        &self,
+        thread_id: &str,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Value> {
+        let mut params = json!({ "threadId": thread_id });
+        if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
+            params["cursor"] = Value::String(cursor.into());
+        }
+        if let Some(limit) = limit {
+            params["limit"] = json!(limit);
+        }
+        self.request("thread/queue/list", params)
+    }
+
+    pub fn thread_queue_update(
+        &self,
+        thread_id: &str,
+        queued_submission_id: &str,
+        input: Value,
+    ) -> Result<Value> {
+        self.request(
+            "thread/queue/update",
+            json!({
+                "threadId": thread_id,
+                "queuedSubmissionId": queued_submission_id,
+                "input": input,
+            }),
+        )
+    }
+
+    pub fn thread_queue_delete(
+        &self,
+        thread_id: &str,
+        queued_submission_id: &str,
+    ) -> Result<Value> {
+        self.request(
+            "thread/queue/delete",
+            json!({
+                "threadId": thread_id,
+                "queuedSubmissionId": queued_submission_id,
+            }),
+        )
+    }
+
+    pub fn thread_queue_reorder(
+        &self,
+        thread_id: &str,
+        queued_submission_ids: &[String],
+    ) -> Result<Value> {
+        self.request(
+            "thread/queue/reorder",
+            json!({
+                "threadId": thread_id,
+                "queuedSubmissionIds": queued_submission_ids,
+            }),
+        )
+    }
+
+    pub fn thread_queue_start(
+        &self,
+        thread_id: &str,
+        queued_submission_id: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({ "threadId": thread_id });
+        if let Some(queued_submission_id) = queued_submission_id.filter(|value| !value.is_empty()) {
+            params["queuedSubmissionId"] = Value::String(queued_submission_id.into());
+        }
+        self.request("thread/queue/start", params)
+    }
+
     pub fn thread_memory_mode_set(&self, thread_id: &str, mode: &str) -> Result<Value> {
         self.request(
             "thread/memoryMode/set",
@@ -827,14 +938,27 @@ impl AppServerClient {
     }
 
     pub fn review_start(&self, thread_id: &str) -> Result<Value> {
-        self.request(
-            "review/start",
-            json!({
-                "threadId": thread_id,
-                "target": { "type": "uncommittedChanges" },
-                "delivery": "inline"
-            }),
+        self.review_start_with_options(
+            thread_id,
+            json!({ "type": "uncommittedChanges" }),
+            Some("inline"),
         )
+    }
+
+    pub fn review_start_with_options(
+        &self,
+        thread_id: &str,
+        target: Value,
+        delivery: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "threadId": thread_id,
+            "target": target,
+        });
+        if let Some(delivery) = delivery.filter(|value| !value.is_empty()) {
+            params["delivery"] = Value::String(delivery.into());
+        }
+        self.request("review/start", params)
     }
 
     pub fn project_list(&self, limit: Option<u32>, cursor: Option<&str>) -> Result<Value> {
@@ -865,6 +989,40 @@ impl AppServerClient {
         self.request("project/update", Value::Object(params))
     }
 
+    pub fn project_import(
+        &self,
+        idempotency_key: &str,
+        name: &str,
+        roots: Value,
+        threads: Option<&[String]>,
+        metadata: Option<Value>,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "idempotencyKey": idempotency_key,
+            "name": name,
+            "roots": roots,
+        });
+        if let Some(threads) = threads {
+            params["threads"] = json!(threads);
+        }
+        if let Some(metadata) = metadata {
+            params["metadata"] = metadata;
+        }
+        self.request("project/import", params)
+    }
+
+    pub fn project_move(&self, project_id: &str, before_project_id: Option<&str>) -> Result<Value> {
+        let mut params = json!({ "projectId": project_id });
+        if let Some(before_project_id) = before_project_id.filter(|value| !value.is_empty()) {
+            params["beforeProjectId"] = Value::String(before_project_id.into());
+        }
+        self.request("project/move", params)
+    }
+
+    pub fn project_delete(&self, project_id: &str) -> Result<Value> {
+        self.request("project/delete", json!({ "projectId": project_id }))
+    }
+
     pub fn config_value_write(
         &self,
         key_path: &str,
@@ -879,6 +1037,26 @@ impl AppServerClient {
                 "value": value,
             }),
         )
+    }
+
+    pub fn config_batch_write(
+        &self,
+        edits: Value,
+        expected_version: Option<&str>,
+        file_path: Option<&str>,
+        reload_user_config: bool,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "edits": edits,
+            "reloadUserConfig": reload_user_config,
+        });
+        if let Some(expected_version) = expected_version.filter(|value| !value.is_empty()) {
+            params["expectedVersion"] = Value::String(expected_version.into());
+        }
+        if let Some(file_path) = file_path.filter(|value| !value.is_empty()) {
+            params["filePath"] = Value::String(file_path.into());
+        }
+        self.request("config/batchWrite", params)
     }
 
     pub fn config_mcp_server_reload(&self) -> Result<Value> {
@@ -914,6 +1092,226 @@ impl AppServerClient {
             params["marketplaceName"] = Value::String(marketplace_name.into());
         }
         self.request("marketplace/upgrade", params)
+    }
+
+    pub fn plugin_search(
+        &self,
+        search_term: &str,
+        cursor: Option<&str>,
+        cwds: Option<&[String]>,
+        limit: Option<u32>,
+        scope: Option<Value>,
+    ) -> Result<Value> {
+        let mut params = json!({ "searchTerm": search_term });
+        if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
+            params["cursor"] = Value::String(cursor.into());
+        }
+        if let Some(cwds) = cwds {
+            params["cwds"] = json!(cwds);
+        }
+        if let Some(limit) = limit {
+            params["limit"] = json!(limit);
+        }
+        if let Some(scope) = scope {
+            params["scope"] = scope;
+        }
+        self.request("plugin/search", params)
+    }
+
+    pub fn plugin_read(
+        &self,
+        plugin_name: &str,
+        marketplace_path: Option<&str>,
+        remote_marketplace_name: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({ "pluginName": plugin_name });
+        if let Some(marketplace_path) = marketplace_path.filter(|value| !value.is_empty()) {
+            params["marketplacePath"] = Value::String(marketplace_path.into());
+        }
+        if let Some(remote_marketplace_name) =
+            remote_marketplace_name.filter(|value| !value.is_empty())
+        {
+            params["remoteMarketplaceName"] = Value::String(remote_marketplace_name.into());
+        }
+        self.request("plugin/read", params)
+    }
+
+    pub fn plugin_installed(
+        &self,
+        cwds: Option<&[String]>,
+        install_suggestion_plugin_names: Option<&[String]>,
+    ) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(cwds) = cwds {
+            params["cwds"] = json!(cwds);
+        }
+        if let Some(names) = install_suggestion_plugin_names {
+            params["installSuggestionPluginNames"] = json!(names);
+        }
+        self.request("plugin/installed", params)
+    }
+
+    pub fn skills_config_write(
+        &self,
+        enabled: bool,
+        name: Option<&str>,
+        path: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({ "enabled": enabled });
+        if let Some(name) = name.filter(|value| !value.is_empty()) {
+            params["name"] = Value::String(name.into());
+        }
+        if let Some(path) = path.filter(|value| !value.is_empty()) {
+            params["path"] = Value::String(path.into());
+        }
+        self.request("skills/config/write", params)
+    }
+
+    pub fn skills_extra_roots_set(&self, extra_roots: &[String]) -> Result<Value> {
+        self.request(
+            "skills/extraRoots/set",
+            json!({ "extraRoots": extra_roots }),
+        )
+    }
+
+    pub fn mcp_server_oauth_login(
+        &self,
+        name: &str,
+        scopes: Option<&[String]>,
+        thread_id: Option<&str>,
+        timeout_secs: Option<i64>,
+    ) -> Result<Value> {
+        let mut params = json!({ "name": name });
+        if let Some(scopes) = scopes {
+            params["scopes"] = json!(scopes);
+        }
+        if let Some(thread_id) = thread_id.filter(|value| !value.is_empty()) {
+            params["threadId"] = Value::String(thread_id.into());
+        }
+        if let Some(timeout_secs) = timeout_secs {
+            params["timeoutSecs"] = json!(timeout_secs);
+        }
+        self.request("mcpServer/oauth/login", params)
+    }
+
+    pub fn mcp_server_tool_call(
+        &self,
+        server: &str,
+        thread_id: &str,
+        tool: &str,
+        arguments: Option<Value>,
+        meta: Option<Value>,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "server": server,
+            "threadId": thread_id,
+            "tool": tool,
+        });
+        if let Some(arguments) = arguments {
+            params["arguments"] = arguments;
+        }
+        if let Some(meta) = meta {
+            params["_meta"] = meta;
+        }
+        self.request("mcpServer/tool/call", params)
+    }
+
+    pub fn account_login_start(&self, params: Value) -> Result<Value> {
+        self.request("account/login/start", params)
+    }
+
+    pub fn account_login_cancel(&self, login_id: &str) -> Result<Value> {
+        self.request("account/login/cancel", json!({ "loginId": login_id }))
+    }
+
+    pub fn account_logout(&self) -> Result<Value> {
+        self.request("account/logout", Value::Null)
+    }
+
+    pub fn command_exec(&self, command: &[String], options: Option<Value>) -> Result<Value> {
+        let mut params = json!({ "command": command });
+        if let Some(options) = options.and_then(|value| value.as_object().cloned()) {
+            params
+                .as_object_mut()
+                .expect("command params is an object")
+                .extend(options);
+        }
+        self.request("command/exec", params)
+    }
+
+    pub fn command_exec_write(
+        &self,
+        process_id: &str,
+        delta_base64: Option<&str>,
+        close_stdin: bool,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "processId": process_id,
+            "closeStdin": close_stdin,
+        });
+        if let Some(delta_base64) = delta_base64 {
+            params["deltaBase64"] = Value::String(delta_base64.into());
+        }
+        self.request("command/exec/write", params)
+    }
+
+    pub fn command_exec_terminate(&self, process_id: &str) -> Result<Value> {
+        self.request("command/exec/terminate", json!({ "processId": process_id }))
+    }
+
+    pub fn command_exec_resize(&self, process_id: &str, rows: u16, cols: u16) -> Result<Value> {
+        self.request(
+            "command/exec/resize",
+            json!({ "processId": process_id, "size": { "rows": rows, "cols": cols } }),
+        )
+    }
+
+    pub fn process_spawn(
+        &self,
+        process_handle: &str,
+        command: &[String],
+        cwd: &str,
+        options: Option<Value>,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "processHandle": process_handle,
+            "command": command,
+            "cwd": cwd,
+        });
+        if let Some(options) = options.and_then(|value| value.as_object().cloned()) {
+            params
+                .as_object_mut()
+                .expect("process params is an object")
+                .extend(options);
+        }
+        self.request("process/spawn", params)
+    }
+
+    pub fn process_write_stdin(
+        &self,
+        process_handle: &str,
+        delta_base64: Option<&str>,
+        close_stdin: bool,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "processHandle": process_handle,
+            "closeStdin": close_stdin,
+        });
+        if let Some(delta_base64) = delta_base64 {
+            params["deltaBase64"] = Value::String(delta_base64.into());
+        }
+        self.request("process/writeStdin", params)
+    }
+
+    pub fn process_kill(&self, process_handle: &str) -> Result<Value> {
+        self.request("process/kill", json!({ "processHandle": process_handle }))
+    }
+
+    pub fn process_resize_pty(&self, process_handle: &str, rows: u16, cols: u16) -> Result<Value> {
+        self.request(
+            "process/resizePty",
+            json!({ "processHandle": process_handle, "size": { "rows": rows, "cols": cols } }),
+        )
     }
 
     pub fn plugin_install(
@@ -1302,6 +1700,169 @@ mod tests {
         assert_eq!(requests[22]["params"]["mergeStrategy"], "replace");
         assert_eq!(requests[25]["params"]["marketplaceName"], "main");
         assert_eq!(requests[27]["params"]["pluginName"], "plugin-name");
+    }
+
+    #[test]
+    fn extended_inventory_methods_emit_schema_required_fields() {
+        let input = (1..=31)
+            .map(|id| format!(r#"{{"id":{id},"result":{{}}}}"#))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let recorded = RecordingWriter::default();
+        let bytes = recorded.0.clone();
+        let client = AppServerClient::from_parts(Cursor::new(input.into_bytes()), recorded);
+        let ids = vec![String::from("queued-1"), String::from("queued-2")];
+        let roots = json!([{ "path": "/tmp" }]);
+        client
+            .thread_section_move("thread-1", Some("section-1"), Some("thread-2"))
+            .unwrap();
+        client
+            .thread_inject_items("thread-1", json!([{ "type": "message" }]))
+            .unwrap();
+        client
+            .thread_queue_add(
+                "thread-1",
+                "client-message-1",
+                json!([{ "type": "text", "text": "queued" }]),
+            )
+            .unwrap();
+        client
+            .thread_queue_list("thread-1", Some("cursor"), Some(10))
+            .unwrap();
+        client
+            .thread_queue_update(
+                "thread-1",
+                "queued-1",
+                json!([{ "type": "text", "text": "updated" }]),
+            )
+            .unwrap();
+        client.thread_queue_delete("thread-1", "queued-1").unwrap();
+        client.thread_queue_reorder("thread-1", &ids).unwrap();
+        client
+            .thread_queue_start("thread-1", Some("queued-2"))
+            .unwrap();
+        client
+            .review_start_with_options(
+                "thread-1",
+                json!({ "type": "commit", "sha": "abc" }),
+                Some("detached"),
+            )
+            .unwrap();
+        client
+            .project_import(
+                "import-1",
+                "Imported",
+                roots,
+                Some(&[String::from("thread-1")]),
+                Some(json!({ "source": "fixture" })),
+            )
+            .unwrap();
+        client.project_move("project-1", Some("project-2")).unwrap();
+        client.project_delete("project-2").unwrap();
+        client
+            .config_batch_write(
+                json!([{ "keyPath": "model", "value": "gpt-test" }]),
+                Some("version-1"),
+                Some("/tmp/config.toml"),
+                true,
+            )
+            .unwrap();
+        client
+            .plugin_search(
+                "lint",
+                Some("cursor"),
+                Some(&[String::from("/tmp")]),
+                Some(5),
+                None,
+            )
+            .unwrap();
+        client
+            .plugin_read("plugin-name", Some("/tmp/marketplace"), Some("main"))
+            .unwrap();
+        client
+            .plugin_installed(
+                Some(&[String::from("/tmp")]),
+                Some(&[String::from("plugin-name")]),
+            )
+            .unwrap();
+        client
+            .skills_config_write(false, Some("skill-name"), Some("/tmp/SKILL.md"))
+            .unwrap();
+        client
+            .skills_extra_roots_set(&[String::from("/tmp/skills")])
+            .unwrap();
+        client
+            .mcp_server_oauth_login(
+                "fixture",
+                Some(&[String::from("read")]),
+                Some("thread-1"),
+                Some(30),
+            )
+            .unwrap();
+        client
+            .mcp_server_tool_call(
+                "fixture",
+                "thread-1",
+                "search",
+                Some(json!({ "query": "needle" })),
+                Some(json!({})),
+            )
+            .unwrap();
+        client
+            .account_login_start(json!({ "type": "chatgptDeviceCode" }))
+            .unwrap();
+        client.account_login_cancel("login-1").unwrap();
+        client.account_logout().unwrap();
+        client
+            .command_exec(
+                &[String::from("printf"), String::from("ok")],
+                Some(json!({ "processId": "process-1", "streamStdoutStderr": true })),
+            )
+            .unwrap();
+        client
+            .command_exec_write("process-1", Some("b2s="), true)
+            .unwrap();
+        client.command_exec_terminate("process-1").unwrap();
+        client.command_exec_resize("process-1", 24, 80).unwrap();
+        client
+            .process_spawn(
+                "handle-1",
+                &[String::from("printf"), String::from("ok")],
+                "/tmp",
+                Some(json!({ "streamStdoutStderr": true })),
+            )
+            .unwrap();
+        client
+            .process_write_stdin("handle-1", Some("b2s="), true)
+            .unwrap();
+        client.process_kill("handle-1").unwrap();
+        client.process_resize_pty("handle-1", 24, 80).unwrap();
+
+        let requests = String::from_utf8(bytes.lock().unwrap().clone())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(requests.len(), 31);
+        assert_eq!(requests[0]["method"], "thread/section/move");
+        assert_eq!(requests[0]["params"]["beforeThreadId"], "thread-2");
+        assert_eq!(
+            requests[2]["params"]["clientUserMessageId"],
+            "client-message-1"
+        );
+        assert_eq!(requests[7]["params"]["queuedSubmissionId"], "queued-2");
+        assert_eq!(requests[8]["params"]["delivery"], "detached");
+        assert_eq!(requests[9]["params"]["idempotencyKey"], "import-1");
+        assert_eq!(requests[12]["params"]["reloadUserConfig"], true);
+        assert_eq!(requests[13]["params"]["searchTerm"], "lint");
+        assert_eq!(requests[18]["params"]["name"], "fixture");
+        assert_eq!(requests[19]["params"]["arguments"]["query"], "needle");
+        assert_eq!(requests[20]["params"]["type"], "chatgptDeviceCode");
+        assert_eq!(requests[23]["params"]["command"][0], "printf");
+        assert_eq!(requests[24]["params"]["deltaBase64"], "b2s=");
+        assert_eq!(requests[27]["params"]["processHandle"], "handle-1");
+        assert_eq!(requests[30]["params"]["size"]["cols"], 80);
     }
 
     #[test]
