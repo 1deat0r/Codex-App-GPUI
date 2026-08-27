@@ -484,6 +484,7 @@ impl AppState {
         let mut state = Self {
             workspace: snapshot.workspace,
             settings: snapshot.settings,
+            skill_roots: snapshot.skill_roots,
             selected_project: snapshot.selected_project,
             selected_task: snapshot.selected_task,
             app_menu: None,
@@ -511,7 +512,6 @@ impl AppState {
             live_client: None,
             catalog: ServerCatalog::default(),
             active_app: None,
-            skill_roots: Vec::new(),
             voice_active: false,
             active_turn_id: None,
             pending_interaction: None,
@@ -545,6 +545,7 @@ impl AppState {
         Snapshot {
             workspace: self.workspace.clone(),
             settings: self.settings.clone(),
+            skill_roots: self.skill_roots.clone(),
             selected_project: self.selected_project.clone(),
             selected_task: self.selected_task.clone(),
             sidebar_collapsed: self.sidebar_collapsed,
@@ -6564,7 +6565,7 @@ mod tests {
             git_worktrees(repository.to_str().unwrap()).unwrap().len(),
             1
         );
-        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -6579,6 +6580,11 @@ mod tests {
         ));
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(
+            root.with_file_name("codex-app-gpui-open-path-sibling.txt"),
+            "outside\n",
+        )
+        .unwrap();
         assert_eq!(
             resolve_open_path(root.to_str().unwrap(), "src/main.rs").unwrap(),
             root.join("src/main.rs").canonicalize().unwrap()
@@ -6587,8 +6593,22 @@ mod tests {
             resolve_open_path(root.to_str().unwrap(), "Working tree").unwrap(),
             root.canonicalize().unwrap()
         );
-        assert!(resolve_open_path(root.to_str().unwrap(), "../outside").is_err());
-        std::fs::remove_dir_all(root).unwrap();
+        assert!(resolve_open_path(
+            root.to_str().unwrap(),
+            "../codex-app-gpui-open-path-sibling.txt"
+        )
+        .is_err());
+        let outside_link = root.join("src/outside-link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            root.with_file_name("codex-app-gpui-open-path-sibling.txt"),
+            &outside_link,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        assert!(resolve_open_path(root.to_str().unwrap(), "src/outside-link").is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+        let _ = std::fs::remove_file(root.with_file_name("codex-app-gpui-open-path-sibling.txt"));
     }
 
     #[test]

@@ -17,6 +17,8 @@ pub struct Snapshot {
     pub workspace: Workspace,
     pub settings: Settings,
     #[serde(default)]
+    pub skill_roots: Vec<String>,
+    #[serde(default)]
     pub selected_project: String,
     #[serde(default)]
     pub selected_task: String,
@@ -64,6 +66,7 @@ impl Snapshot {
         Self {
             workspace,
             settings: Settings::default(),
+            skill_roots: Vec::new(),
             selected_project: project,
             selected_task: task,
             sidebar_collapsed: false,
@@ -241,6 +244,7 @@ mod tests {
         original.settings.pull_request_instructions = "Run the checks".into();
         original.settings.pull_request_watch_instructions = "Fix failing checks".into();
         original.settings.projectless_task_folder = "/tmp/projectless".into();
+        original.skill_roots = vec!["/tmp/skills".into()];
         save_to(&path, &original).unwrap();
         let restored = load_from(&path).unwrap().unwrap();
         assert_eq!(restored, original);
@@ -259,6 +263,7 @@ mod tests {
             "selected_task": "codex-app-gpui-parity"
         });
         let restored: Snapshot = serde_json::from_value(legacy).unwrap();
+        assert!(restored.skill_roots.is_empty());
         assert_eq!(restored.content_layout, "Chat");
         assert!(!restored.bottom_panel_open);
         assert!(!restored.side_panel_open);
