@@ -72,13 +72,45 @@ fn menu_bar(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
         .w_full()
         .flex()
         .items_center()
-        .gap_4()
-        .px_3()
+        .gap_2()
+        .px_2()
         .bg(theme::bg_base())
         .border_b_1()
         .border_color(theme::border())
         .text_size(rems(0.74))
         .text_color(theme::text_muted())
+        .child(
+            div()
+                .id("history-navigation")
+                .flex()
+                .items_center()
+                .gap_0p5()
+                .children([
+                    chrome_button(
+                        "history-back",
+                        "‹",
+                        "Back",
+                        window.listener_for(&cx.entity(), |_this, _event, window, _cx| {
+                            window.activate_window();
+                        }),
+                    ),
+                    chrome_button(
+                        "history-forward",
+                        "›",
+                        "Forward",
+                        window.listener_for(&cx.entity(), |_this, _event, window, _cx| {
+                            window.activate_window();
+                        }),
+                    ),
+                ]),
+        )
+        .child(
+            div()
+                .id("menu-divider")
+                .h(px(16.0))
+                .w(px(1.0))
+                .bg(theme::border()),
+        )
         .children([
             top_menu_button(
                 "menu-file",
@@ -113,6 +145,56 @@ fn menu_bar(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                 }),
             ),
         ])
+        .child(div().flex_1().child(""))
+        .children((!window.is_fullscreen()).then(|| window_controls(window)))
+}
+
+fn chrome_button(
+    id: &'static str,
+    label: &'static str,
+    _accessible_name: &'static str,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .size_6()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_sm()
+        .cursor_pointer()
+        .text_size(rems(0.9))
+        .text_color(theme::text_muted())
+        .child(label)
+        .on_click(listener)
+        .hover(|style| style.bg(theme::bg_hover()).text_color(theme::text()))
+}
+
+fn window_controls(window: &Window) -> Stateful<Div> {
+    let maximize_label = if window.is_maximized() { "❐" } else { "□" };
+    div()
+        .id("window-controls")
+        .flex()
+        .items_center()
+        .gap_0p5()
+        .child(chrome_button(
+            "window-minimize",
+            "−",
+            "Minimize",
+            |_event, window, _app| window.minimize_window(),
+        ))
+        .child(chrome_button(
+            "window-maximize",
+            maximize_label,
+            "Maximize",
+            |_event, window, _app| window.toggle_fullscreen(),
+        ))
+        .child(chrome_button(
+            "window-close",
+            "×",
+            "Close",
+            |_event, _window, app| app.quit(),
+        ))
 }
 
 fn top_menu_button(
@@ -856,7 +938,10 @@ fn main_panel(state: &AppState, window: &mut Window, cx: &mut Context<AppState>)
         .h_full()
         .flex()
         .flex_col()
-        .bg(theme::bg_base())
+        // Keep the content plane readable over a transparent native window.
+        // The Electron reference exposes the wallpaper primarily around its
+        // chrome; the transcript and composer remain a stable dark surface.
+        .bg(theme::bg_surface())
         .child(thread_header(state, window, cx))
         .child(match state.route {
             Route::Task => thread_view(state, window, cx),

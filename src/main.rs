@@ -66,6 +66,7 @@ fn main() {
                 appears_transparent: false,
                 traffic_light_position: None,
             }),
+            window_background: WindowBackgroundAppearance::Transparent,
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
                 size(px(1280.0), px(820.0)),

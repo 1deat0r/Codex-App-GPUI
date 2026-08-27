@@ -55,7 +55,6 @@ function executableOnPath(command) {
 }
 
 function ensureExecutable() {
-  if (fs.existsSync(executable)) return;
   run(process.execPath, ["scripts/run-cargo.mjs", "build", "--locked"], { stdio: "inherit" });
   if (!fs.existsSync(executable)) fail("native GPUI executable was not produced");
 }
