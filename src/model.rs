@@ -185,6 +185,8 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub sound_effects: bool,
     #[serde(default)]
+    pub reduced_motion: bool,
+    #[serde(default)]
     pub worktree_root: String,
 }
 
@@ -221,6 +223,7 @@ impl Default for Settings {
             font_size: default_font_size(),
             notifications: true,
             sound_effects: true,
+            reduced_motion: false,
             worktree_root: String::new(),
         }
     }

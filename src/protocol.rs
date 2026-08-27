@@ -51,6 +51,7 @@ pub struct ServerThread {
     pub status: String,
     pub model: String,
     pub updated_at: String,
+    pub archived: bool,
 }
 
 impl ServerThread {
@@ -81,6 +82,10 @@ impl ServerThread {
             .or_else(|| value.get("updated_at"))
             .map(value_text)
             .unwrap_or_default();
+        let archived = value
+            .get("archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Some(Self {
             id,
             title,
@@ -88,6 +93,7 @@ impl ServerThread {
             status,
             model,
             updated_at,
+            archived,
         })
     }
 }
@@ -339,18 +345,52 @@ impl AppServerClient {
     }
 
     pub fn thread_list(&self, search_term: Option<&str>) -> Result<Vec<ServerThread>> {
-        let mut params = json!({ "limit": 100 });
-        if let Some(search_term) = search_term.filter(|term| !term.is_empty()) {
-            params["searchTerm"] = Value::String(search_term.into());
+        self.thread_list_with_options(search_term, None)
+    }
+
+    pub fn thread_list_with_options(
+        &self,
+        search_term: Option<&str>,
+        archived: Option<bool>,
+    ) -> Result<Vec<ServerThread>> {
+        let mut cursor: Option<String> = None;
+        let mut threads = Vec::new();
+        for _ in 0..100 {
+            let mut params = json!({ "limit": 100 });
+            if let Some(search_term) = search_term.filter(|term| !term.is_empty()) {
+                params["searchTerm"] = Value::String(search_term.into());
+            }
+            if let Some(archived) = archived {
+                params["archived"] = Value::Bool(archived);
+            }
+            if let Some(cursor) = cursor.as_deref() {
+                params["cursor"] = Value::String(cursor.to_owned());
+            }
+            let value = self.request("thread/list", params)?;
+            let array = value
+                .get("data")
+                .or_else(|| value.get("threads"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            threads.extend(array.iter().filter_map(|thread| {
+                let mut thread = ServerThread::from_value(thread)?;
+                if archived == Some(true) {
+                    thread.archived = true;
+                }
+                Some(thread)
+            }));
+            cursor = value
+                .get("nextCursor")
+                .or_else(|| value.get("next_cursor"))
+                .and_then(Value::as_str)
+                .filter(|cursor| !cursor.is_empty())
+                .map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
         }
-        let value = self.request("thread/list", params)?;
-        let array = value
-            .get("data")
-            .or_else(|| value.get("threads"))
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        Ok(array.iter().filter_map(ServerThread::from_value).collect())
+        Ok(threads)
     }
 
     pub fn thread_start(&self, cwd: Option<&str>) -> Result<Value> {
@@ -417,6 +457,33 @@ impl AppServerClient {
         approval_policy: Option<&str>,
         attachments: &[String],
     ) -> Result<Value> {
+        self.turn_start_with_full_options_and_attachments(
+            thread_id,
+            text,
+            model,
+            effort,
+            cwd,
+            approval_policy,
+            None,
+            None,
+            None,
+            attachments,
+        )
+    }
+
+    pub fn turn_start_with_full_options_and_attachments(
+        &self,
+        thread_id: &str,
+        text: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        cwd: Option<&str>,
+        approval_policy: Option<&str>,
+        sandbox_policy: Option<&str>,
+        model_provider: Option<&str>,
+        personality: Option<&str>,
+        attachments: &[String],
+    ) -> Result<Value> {
         let mut input = Vec::with_capacity(attachments.len() + 1);
         if !text.is_empty() || attachments.is_empty() {
             input.push(json!({ "type": "text", "text": text }));
@@ -453,14 +520,109 @@ impl AppServerClient {
         if let Some(approval_policy) = approval_policy.filter(|policy| !policy.is_empty()) {
             params["approvalPolicy"] = Value::String(approval_policy.into());
         }
+        if let Some(sandbox_policy) = sandbox_policy.filter(|policy| !policy.is_empty()) {
+            params["sandboxPolicy"] = Value::String(sandbox_policy.into());
+        }
+        if let Some(model_provider) = model_provider.filter(|provider| !provider.is_empty()) {
+            params["modelProvider"] = Value::String(model_provider.into());
+        }
+        if let Some(personality) = personality.filter(|personality| !personality.is_empty()) {
+            params["personality"] = Value::String(personality.into());
+        }
         self.request("turn/start", params)
     }
 
-    pub fn turn_steer(&self, thread_id: &str, text: &str) -> Result<Value> {
+    pub fn turn_steer(&self, thread_id: &str, expected_turn_id: &str, text: &str) -> Result<Value> {
         self.request(
             "turn/steer",
-            json!({ "threadId": thread_id, "input": [{ "type": "text", "text": text }] }),
+            json!({
+                "threadId": thread_id,
+                "expectedTurnId": expected_turn_id,
+                "input": [{ "type": "text", "text": text }]
+            }),
         )
+    }
+
+    pub fn model_list(&self) -> Result<Value> {
+        self.request("model/list", json!({ "limit": 100 }))
+    }
+
+    pub fn permission_profile_list(&self, cwd: Option<&str>) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) {
+            params["cwd"] = Value::String(cwd.into());
+        }
+        self.request("permissionProfile/list", params)
+    }
+
+    pub fn collaboration_mode_list(&self) -> Result<Value> {
+        self.request("collaborationMode/list", json!({}))
+    }
+
+    pub fn apps_list(&self, thread_id: Option<&str>) -> Result<Value> {
+        let mut params = json!({ "limit": 100 });
+        if let Some(thread_id) = thread_id.filter(|thread_id| !thread_id.is_empty()) {
+            params["threadId"] = Value::String(thread_id.into());
+        }
+        self.request("app/list", params)
+    }
+
+    pub fn apps_installed(&self, thread_id: Option<&str>) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(thread_id) = thread_id.filter(|thread_id| !thread_id.is_empty()) {
+            params["threadId"] = Value::String(thread_id.into());
+        }
+        self.request("app/installed", params)
+    }
+
+    pub fn skills_list(&self, cwds: &[String]) -> Result<Value> {
+        self.request("skills/list", json!({ "cwds": cwds }))
+    }
+
+    pub fn plugin_list(&self) -> Result<Value> {
+        self.request("plugin/list", json!({}))
+    }
+
+    pub fn mcp_server_status_list(&self, thread_id: Option<&str>) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(thread_id) = thread_id.filter(|thread_id| !thread_id.is_empty()) {
+            params["threadId"] = Value::String(thread_id.into());
+        }
+        self.request("mcpServerStatus/list", params)
+    }
+
+    pub fn config_read(&self, cwd: Option<&str>, include_layers: bool) -> Result<Value> {
+        let mut params = json!({ "includeLayers": include_layers });
+        if let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) {
+            params["cwd"] = Value::String(cwd.into());
+        }
+        self.request("config/read", params)
+    }
+
+    pub fn account_read(&self) -> Result<Value> {
+        self.request("account/read", json!({}))
+    }
+
+    pub fn realtime_start(&self, thread_id: &str, output_modality: &str) -> Result<Value> {
+        self.request(
+            "thread/realtime/start",
+            json!({
+                "threadId": thread_id,
+                "outputModality": output_modality,
+                "transport": { "type": "websocket" }
+            }),
+        )
+    }
+
+    pub fn realtime_append_text(&self, thread_id: &str, text: &str) -> Result<Value> {
+        self.request(
+            "thread/realtime/appendText",
+            json!({ "threadId": thread_id, "text": text }),
+        )
+    }
+
+    pub fn realtime_stop(&self, thread_id: &str) -> Result<Value> {
+        self.request("thread/realtime/stop", json!({ "threadId": thread_id }))
     }
 
     pub fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<Value> {

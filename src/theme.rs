@@ -2,12 +2,32 @@
 //! visual hierarchy as the reference: quiet dark chrome, one raised content
 //! plane, compact navigation rows, and restrained blue highlights.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 const fn color(hex: u32) -> gpui::Rgba {
     gpui::Rgba {
         r: ((hex >> 16) & 0xff) as f32 / 255.0,
         g: ((hex >> 8) & 0xff) as f32 / 255.0,
         b: (hex & 0xff) as f32 / 255.0,
         a: 1.0,
+    }
+}
+
+static ACTIVE_THEME: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_active(theme: &str) {
+    ACTIVE_THEME.store((theme == "light") as u8, Ordering::Relaxed);
+}
+
+fn light() -> bool {
+    ACTIVE_THEME.load(Ordering::Relaxed) == 1
+}
+
+fn variant(dark: gpui::Rgba, light_value: gpui::Rgba) -> gpui::Rgba {
+    if light() {
+        light_value
+    } else {
+        dark
     }
 }
 
@@ -40,8 +60,80 @@ pub const ROW_RADIUS: f32 = 7.0;
 
 pub fn text_color(active: bool) -> gpui::Rgba {
     if active {
-        TEXT
+        text()
     } else {
-        TEXT_MUTED
+        text_muted()
     }
+}
+
+pub fn bg_base() -> gpui::Rgba {
+    variant(BG_BASE, color(0xf7f7f8))
+}
+
+pub fn bg_sidebar() -> gpui::Rgba {
+    variant(BG_SIDEBAR, color(0xeeeeef))
+}
+
+pub fn bg_surface() -> gpui::Rgba {
+    variant(BG_SURFACE, color(0xffffff))
+}
+
+pub fn bg_surface_2() -> gpui::Rgba {
+    variant(BG_SURFACE_2, color(0xf0f0f2))
+}
+
+pub fn bg_hover() -> gpui::Rgba {
+    variant(BG_HOVER, color(0xe5e5e8))
+}
+
+pub fn bg_selected() -> gpui::Rgba {
+    variant(BG_SELECTED, color(0xd9e5f8))
+}
+
+pub fn border() -> gpui::Rgba {
+    variant(BORDER, color(0xd4d4d8))
+}
+
+pub fn text() -> gpui::Rgba {
+    variant(TEXT, color(0x1c1c1e))
+}
+
+pub fn text_muted() -> gpui::Rgba {
+    variant(TEXT_MUTED, color(0x5d5d65))
+}
+
+pub fn text_faint() -> gpui::Rgba {
+    variant(TEXT_FAINT, color(0x767680))
+}
+
+pub fn text_disabled() -> gpui::Rgba {
+    variant(TEXT_DISABLED, color(0xa1a1a8))
+}
+
+pub fn accent() -> gpui::Rgba {
+    variant(ACCENT, color(0x2764c8))
+}
+
+pub fn accent_soft() -> gpui::Rgba {
+    variant(ACCENT_SOFT, color(0xdce8fb))
+}
+
+pub fn success() -> gpui::Rgba {
+    variant(SUCCESS, color(0x177245))
+}
+
+pub fn warning() -> gpui::Rgba {
+    variant(WARNING, color(0xa45500))
+}
+
+pub fn danger() -> gpui::Rgba {
+    variant(DANGER, color(0xb3261e))
+}
+
+pub fn user_bubble() -> gpui::Rgba {
+    variant(USER_BUBBLE, color(0xe8e8eb))
+}
+
+pub fn code_bg() -> gpui::Rgba {
+    variant(CODE_BG, color(0xf0f0f2))
 }

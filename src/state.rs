@@ -1,5 +1,6 @@
 //! UI state and interaction reducer for the native client.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,6 +17,113 @@ use crate::protocol::{AppServerClient, ServerThread};
 pub const MODEL_OPTIONS: &[&str] = &["5.6 Luna Max", "5.6 Sol", "5.5", "5.4 Mini"];
 pub const REASONING_OPTIONS: &[&str] = &["auto", "low", "high", "max"];
 pub const COMPOSER_MODES: &[&str] = &["Agent", "Chat", "Ask"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOption {
+    pub id: String,
+    pub label: String,
+    pub reasoning: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerCatalog {
+    pub models: Vec<ModelOption>,
+    pub reasoning: Vec<String>,
+    pub permissions: Vec<String>,
+    pub collaboration_modes: Vec<String>,
+    pub apps: Vec<String>,
+    pub installed_apps: Vec<String>,
+    pub plugins: Vec<String>,
+    pub skills: Vec<String>,
+    pub mcp_servers: Vec<String>,
+    pub account_label: Option<String>,
+    pub config_summary: Vec<String>,
+}
+
+impl ServerCatalog {
+    fn from_client(client: &AppServerClient, cwd: Option<&str>) -> Self {
+        let mut catalog = Self::default();
+        if let Ok(value) = client.model_list() {
+            catalog.models = model_options_from_value(&value);
+            catalog.reasoning = catalog
+                .models
+                .iter()
+                .flat_map(|model| model.reasoning.iter().cloned())
+                .collect::<Vec<_>>();
+            dedupe_strings(&mut catalog.reasoning);
+        }
+        if let Ok(value) = client.permission_profile_list(cwd) {
+            catalog.permissions = named_values_from_data(&value, &["id", "name", "label"]);
+        }
+        if let Ok(value) = client.collaboration_mode_list() {
+            catalog.collaboration_modes = named_values_from_data(&value, &["name", "mode", "id"]);
+        }
+        if let Ok(value) = client.apps_list(None) {
+            catalog.apps = named_values_from_data(&value, &["name", "displayName", "id"]);
+        }
+        if let Ok(value) = client.apps_installed(None) {
+            catalog.installed_apps = named_values_from_data(&value, &["name", "displayName", "id"]);
+        }
+        if let Ok(value) = client.plugin_list() {
+            catalog.plugins = named_values_from_data(&value, &["name", "displayName", "id"]);
+            if catalog.plugins.is_empty() {
+                catalog.plugins = nested_named_values_from_data(
+                    &value,
+                    &["marketplaces", "plugins", "data"],
+                    &["name", "displayName", "id"],
+                );
+            }
+        }
+        if let Ok(value) = client.skills_list(
+            &cwd.filter(|cwd| !cwd.is_empty())
+                .map(|cwd| vec![cwd.to_owned()])
+                .unwrap_or_default(),
+        ) {
+            catalog.skills = nested_named_values_from_data(
+                &value,
+                &["skills", "data"],
+                &["name", "displayName", "id"],
+            );
+        }
+        if let Ok(value) = client.mcp_server_status_list(None) {
+            catalog.mcp_servers = named_values_from_data(&value, &["name", "displayName", "id"]);
+        }
+        if let Ok(value) = client.account_read() {
+            catalog.account_label = account_label_from_value(&value);
+        }
+        if let Ok(value) = client.config_read(cwd, false) {
+            catalog.config_summary = config_summary_from_value(&value);
+        }
+        catalog
+    }
+
+    fn model_ids(&self) -> Vec<String> {
+        if self.models.is_empty() {
+            MODEL_OPTIONS.iter().map(|model| (*model).into()).collect()
+        } else {
+            self.models.iter().map(|model| model.id.clone()).collect()
+        }
+    }
+
+    fn reasoning_options(&self) -> Vec<String> {
+        if self.reasoning.is_empty() {
+            REASONING_OPTIONS
+                .iter()
+                .map(|level| (*level).into())
+                .collect()
+        } else {
+            self.reasoning.clone()
+        }
+    }
+
+    pub fn model_label(&self, id: &str) -> String {
+        self.models
+            .iter()
+            .find(|model| model.id == id)
+            .map(|model| model.label.clone())
+            .unwrap_or_else(|| id.to_owned())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -68,6 +176,8 @@ pub struct AppState {
     pub toast: Option<String>,
     pub connection: ConnectionState,
     pub live_client: Option<Arc<AppServerClient>>,
+    pub catalog: ServerCatalog,
+    pub voice_active: bool,
     pub active_turn_id: Option<String>,
     pub pending_approval_id: Option<Value>,
     pub rename_open: bool,
@@ -108,6 +218,8 @@ impl AppState {
             toast: None,
             connection: ConnectionState::Demo,
             live_client: None,
+            catalog: ServerCatalog::default(),
+            voice_active: false,
             active_turn_id: None,
             pending_approval_id: None,
             rename_open: false,
@@ -157,9 +269,11 @@ impl AppState {
                     })
                     .await;
                 let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
-                    Ok((client, threads)) => {
+                    Ok((client, threads, catalog)) => {
                         this.connection = ConnectionState::Live;
                         this.live_client = Some(client);
+                        this.catalog = catalog;
+                        this.normalize_catalog_defaults();
                         this.import_live_threads(threads);
                         this.start_event_loop(cx);
                         this.notify_success("Connected to the local Codex app-server", cx);
@@ -281,6 +395,15 @@ impl AppState {
                     }
                 }
             }
+            "thread/status/changed" => {
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    task.status = params
+                        .get("status")
+                        .map(status_text)
+                        .unwrap_or_else(|| task.status.clone());
+                    persist = true;
+                }
+            }
             "thread/archived" => {
                 if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
                     task.archived = true;
@@ -376,6 +499,23 @@ impl AppState {
                     persist = true;
                 }
             }
+            "turn/diff/updated" => {
+                if let (Some(task), Some(diff)) = (
+                    thread_id.and_then(|id| self.task_mut_by_id(id)),
+                    params.get("diff"),
+                ) {
+                    if let Some(entry) = diff_entry_from_value(
+                        params
+                            .get("turnId")
+                            .and_then(Value::as_str)
+                            .unwrap_or("turn-diff"),
+                        diff,
+                    ) {
+                        upsert_entry(task, entry);
+                        persist = true;
+                    }
+                }
+            }
             "thread/tokenUsage/updated" => {
                 if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
                     if let Some(usage) = params
@@ -430,6 +570,163 @@ impl AppState {
                     if let Some(task) = self.task_mut_by_id(thread_id) {
                         append_tool_output(task, item_id, delta);
                     }
+                }
+            }
+            "item/fileChange/outputDelta" => {
+                if let (Some(thread_id), Some(item_id), Some(delta)) = (
+                    thread_id,
+                    params.get("itemId").and_then(Value::as_str),
+                    params.get("delta").and_then(Value::as_str),
+                ) {
+                    if let Some(task) = self.task_mut_by_id(thread_id) {
+                        append_diff_delta(task, item_id, delta);
+                        persist = true;
+                    }
+                }
+            }
+            "item/fileChange/patchUpdated" => {
+                if let (Some(task), Some(changes)) = (
+                    thread_id.and_then(|id| self.task_mut_by_id(id)),
+                    params.get("changes").and_then(Value::as_array),
+                ) {
+                    let item = json!({
+                        "type": "fileChange",
+                        "id": params.get("itemId").and_then(Value::as_str).unwrap_or("file-change"),
+                        "changes": changes,
+                    });
+                    if let Some(entry) = entry_from_server_item(&item) {
+                        upsert_entry(task, entry);
+                        persist = true;
+                    }
+                }
+            }
+            "command/exec/outputDelta" | "process/outputDelta" => {
+                if let Some(task) = self.task_mut_for_event(thread_id) {
+                    let item_id = params
+                        .get("processId")
+                        .or_else(|| params.get("processHandle"))
+                        .map(value_text)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| "process-output".into());
+                    if let Some(delta) = params
+                        .get("delta")
+                        .or_else(|| params.get("deltaBase64"))
+                        .and_then(Value::as_str)
+                    {
+                        append_tool_output(task, &item_id, delta);
+                        persist = true;
+                    }
+                }
+            }
+            "process/exited" => {
+                if let Some(task) = self.task_mut_for_event(thread_id) {
+                    let item_id = params
+                        .get("processHandle")
+                        .or_else(|| params.get("processId"))
+                        .map(value_text)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| "process-output".into());
+                    let status = if params.get("exitCode").and_then(Value::as_i64) == Some(0) {
+                        "complete"
+                    } else {
+                        "failed"
+                    };
+                    update_tool_status(task, &item_id, status);
+                    persist = true;
+                }
+            }
+            "item/commandExecution/terminalInteraction" => {
+                if let (Some(task), Some(stdin)) = (
+                    thread_id.and_then(|id| self.task_mut_by_id(id)),
+                    params.get("stdin").and_then(Value::as_str),
+                ) {
+                    append_tool_output(
+                        task,
+                        params
+                            .get("itemId")
+                            .and_then(Value::as_str)
+                            .unwrap_or("terminal-interaction"),
+                        stdin,
+                    );
+                    persist = true;
+                }
+            }
+            "item/mcpToolCall/progress" => {
+                if let (Some(task), Some(message)) = (
+                    thread_id.and_then(|id| self.task_mut_by_id(id)),
+                    params.get("message").and_then(Value::as_str),
+                ) {
+                    append_tool_output(
+                        task,
+                        params
+                            .get("itemId")
+                            .and_then(Value::as_str)
+                            .unwrap_or("mcp-progress"),
+                        message,
+                    );
+                    persist = true;
+                }
+            }
+            "thread/realtime/transcript/delta" => {
+                if let (Some(thread_id), Some(delta)) =
+                    (thread_id, params.get("delta").and_then(Value::as_str))
+                {
+                    if let Some(task) = self.task_mut_by_id(thread_id) {
+                        if params.get("role").and_then(Value::as_str) == Some("user") {
+                            append_user_delta(task, delta);
+                        } else {
+                            append_assistant_delta(task, "realtime-transcript", delta);
+                        }
+                        persist = true;
+                    }
+                }
+            }
+            "thread/realtime/transcript/done" => {
+                if let (Some(thread_id), Some(text)) =
+                    (thread_id, params.get("text").and_then(Value::as_str))
+                {
+                    if let Some(task) = self.task_mut_by_id(thread_id) {
+                        if params.get("role").and_then(Value::as_str) == Some("user") {
+                            upsert_entry(
+                                task,
+                                Entry::User {
+                                    id: "realtime-user".into(),
+                                    text: text.into(),
+                                    time: "Live".into(),
+                                },
+                            );
+                        } else {
+                            upsert_entry(
+                                task,
+                                Entry::Assistant {
+                                    id: "realtime-transcript".into(),
+                                    text: text.into(),
+                                    time: "Live".into(),
+                                },
+                            );
+                        }
+                        persist = true;
+                    }
+                }
+            }
+            "thread/realtime/error" => {
+                self.voice_active = false;
+                if let Some(message) = params.get("message").and_then(Value::as_str) {
+                    self.fail(message, cx);
+                }
+            }
+            "thread/realtime/closed" => {
+                self.voice_active = false;
+            }
+            "model/rerouted" => {
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    let from = string_field(&params, &["fromModel"]);
+                    let to = string_field(&params, &["toModel"]);
+                    task.entries.push(Entry::System {
+                        id: format!("model-reroute-{}", task.entries.len()),
+                        text: format!("Model rerouted: {from} → {to}"),
+                    });
+                    persist = true;
                 }
             }
             "item/commandExecution/requestApproval"
@@ -547,6 +844,13 @@ impl AppState {
             .find_map(|project| project.tasks.iter_mut().find(|task| task.id == task_id))
     }
 
+    fn task_mut_for_event(&mut self, thread_id: Option<&str>) -> Option<&mut Task> {
+        match thread_id {
+            Some(thread_id) => self.task_mut_by_id(thread_id),
+            None => self.current_task_mut(),
+        }
+    }
+
     pub fn current_task(&self) -> Option<&Task> {
         self.workspace
             .task(&self.selected_project, &self.selected_task)
@@ -562,6 +866,41 @@ impl AppState {
             .projects
             .iter()
             .find(|project| project.id == self.selected_project)
+    }
+
+    pub fn model_label(&self, model: &str) -> String {
+        self.catalog.model_label(model)
+    }
+
+    pub fn model_options(&self) -> Vec<String> {
+        self.catalog.model_ids()
+    }
+
+    pub fn reasoning_options(&self) -> Vec<String> {
+        self.catalog.reasoning_options()
+    }
+
+    fn normalize_catalog_defaults(&mut self) {
+        if let Some(model) = self.catalog.model_ids().first() {
+            if !self
+                .catalog
+                .models
+                .iter()
+                .any(|option| option.id == self.settings.default_model)
+            {
+                self.settings.default_model = model.clone();
+            }
+        }
+        if let Some(reasoning) = self.catalog.reasoning_options().first() {
+            if !self
+                .catalog
+                .reasoning_options()
+                .iter()
+                .any(|option| option == &self.settings.default_reasoning)
+            {
+                self.settings.default_reasoning = reasoning.clone();
+            }
+        }
     }
 
     pub fn visible_tasks<'a>(&'a self, project: &'a Project) -> impl Iterator<Item = &'a Task> {
@@ -773,6 +1112,7 @@ impl AppState {
                     .unwrap_or_else(|| self.settings.default_reasoning.clone());
                 let cwd = self.current_task().map(|task| task.path.clone());
                 let approval_policy = self.settings.approval_mode.clone();
+                let sandbox_policy = sandbox_policy_wire(&self.settings.sandbox_mode).to_owned();
                 let async_cx = cx.to_async();
                 cx.spawn(
                     move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
@@ -780,13 +1120,16 @@ impl AppState {
                             .background_executor()
                             .spawn(async move {
                                 smol::unblock(move || {
-                                    client.turn_start_with_options_and_attachments(
+                                    client.turn_start_with_full_options_and_attachments(
                                         &task_id,
                                         &text,
                                         Some(&model),
                                         Some(&effort),
                                         cwd.as_deref(),
                                         Some(&approval_policy),
+                                        Some(&sandbox_policy),
+                                        None,
+                                        None,
                                         &attachments,
                                     )
                                 })
@@ -885,15 +1228,16 @@ impl AppState {
     }
 
     pub fn cycle_model(&mut self, cx: &mut Context<Self>) {
+        let options = self.catalog.model_ids();
+        if options.is_empty() {
+            return;
+        }
         let current = self
             .current_task()
             .map(|task| task.model.clone())
             .unwrap_or_default();
-        let pos = MODEL_OPTIONS
-            .iter()
-            .position(|model| *model == current)
-            .unwrap_or(0);
-        let next = MODEL_OPTIONS[(pos + 1) % MODEL_OPTIONS.len()].to_string();
+        let pos = options.iter().position(|model| model == &current);
+        let next = options[pos.map(|pos| (pos + 1) % options.len()).unwrap_or(0)].clone();
         if let Some(task) = self.current_task_mut() {
             task.model = next.clone();
         }
@@ -903,15 +1247,16 @@ impl AppState {
     }
 
     pub fn cycle_reasoning(&mut self, cx: &mut Context<Self>) {
+        let options = self.catalog.reasoning_options();
+        if options.is_empty() {
+            return;
+        }
         let current = self
             .current_task()
             .map(|task| task.reasoning.clone())
             .unwrap_or_else(|| "auto".into());
-        let pos = REASONING_OPTIONS
-            .iter()
-            .position(|level| *level == current)
-            .unwrap_or(0);
-        let next = REASONING_OPTIONS[(pos + 1) % REASONING_OPTIONS.len()].to_string();
+        let pos = options.iter().position(|level| level == &current);
+        let next = options[pos.map(|pos| (pos + 1) % options.len()).unwrap_or(0)].clone();
         if let Some(task) = self.current_task_mut() {
             task.reasoning = next.clone();
         }
@@ -931,6 +1276,41 @@ impl AppState {
         let value = self.settings.approval_mode.clone();
         self.persist(cx);
         self.notify_success(&format!("Approval mode: {value}"), cx);
+    }
+
+    pub fn cycle_theme(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[&str] = &["system", "dark", "light"];
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == self.settings.theme)
+            .unwrap_or(0);
+        self.settings.theme = OPTIONS[(position + 1) % OPTIONS.len()].into();
+        let value = self.settings.theme.clone();
+        self.persist(cx);
+        self.notify_success(&format!("Theme: {value}"), cx);
+    }
+
+    pub fn cycle_font_size(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[u8] = &[13, 14, 15, 16, 18];
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == self.settings.font_size)
+            .unwrap_or(1);
+        self.settings.font_size = OPTIONS[(position + 1) % OPTIONS.len()];
+        let value = self.settings.font_size;
+        self.persist(cx);
+        self.notify_success(&format!("Font size: {value} px"), cx);
+    }
+
+    pub fn toggle_reduced_motion(&mut self, cx: &mut Context<Self>) {
+        self.settings.reduced_motion = !self.settings.reduced_motion;
+        let value = if self.settings.reduced_motion {
+            "on"
+        } else {
+            "off"
+        };
+        self.persist(cx);
+        self.notify_success(&format!("Reduced motion: {value}"), cx);
     }
 
     pub fn cycle_sandbox_mode(&mut self, cx: &mut Context<Self>) {
@@ -1034,6 +1414,73 @@ impl AppState {
                 let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
                     Ok(_) => this.notify_success("Review started", cx),
                     Err(error) => this.fail(&format!("Review failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn steer_current(&mut self, cx: &mut Context<Self>) {
+        if !self.streaming {
+            return;
+        }
+        let text = self.draft.trim().to_owned();
+        let Some(turn_id) = self.active_turn_id.clone() else {
+            self.notify_success("This turn is not steerable yet", cx);
+            return;
+        };
+        if text.is_empty() {
+            self.notify_success("Type a steering instruction first", cx);
+            return;
+        }
+        let Some(client) = self.live_client.clone() else {
+            self.notify_success("Steering is available for live Codex turns", cx);
+            return;
+        };
+        let thread_id = self.selected_task.clone();
+        self.draft.clear();
+        self.caret = 0;
+        self.selection_anchor = None;
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || client.turn_steer(&thread_id, &turn_id, &text)).await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(_) => this.notify_success("Turn steered", cx),
+                    Err(error) => this.fail(&format!("Could not steer turn: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn compact_current(&mut self, cx: &mut Context<Self>) {
+        let thread_id = self.selected_task.clone();
+        if self.connection != ConnectionState::Live || self.selected_project != "live-codex" {
+            self.notify_success("Compaction is available for live Codex tasks", cx);
+            return;
+        }
+        let Some(client) = self.live_client.clone() else {
+            return;
+        };
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result =
+                    async_cx
+                        .background_executor()
+                        .spawn(async move {
+                            smol::unblock(move || client.thread_compact(&thread_id)).await
+                        })
+                        .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(_) => this.notify_success("Compaction started", cx),
+                    Err(error) => this.fail(&format!("Compaction failed: {error}"), cx),
                 });
             },
         )
@@ -1392,10 +1839,76 @@ impl AppState {
         match setting {
             "notifications" => self.settings.notifications = !self.settings.notifications,
             "sound" => self.settings.sound_effects = !self.settings.sound_effects,
+            "reduced-motion" => self.settings.reduced_motion = !self.settings.reduced_motion,
             _ => {}
         }
         self.persist(cx);
         cx.notify();
+    }
+
+    pub fn toggle_voice(&mut self, cx: &mut Context<Self>) {
+        let Some(thread_id) = self
+            .current_task()
+            .filter(|_| self.selected_project == "live-codex")
+            .map(|_| self.selected_task.clone())
+        else {
+            self.notify_success("Voice input is available for live Codex tasks", cx);
+            return;
+        };
+        let Some(client) = self.live_client.clone() else {
+            self.notify_success("Connect to Codex before starting voice input", cx);
+            return;
+        };
+        if self.voice_active {
+            self.voice_active = false;
+            cx.spawn(
+                move |_this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                    let _ = smol::unblock(move || client.realtime_stop(&thread_id)).await;
+                },
+            )
+            .detach();
+            self.notify_success("Voice input stopped", cx);
+            return;
+        }
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || client.realtime_start(&thread_id, "text")).await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(_) => {
+                        this.voice_active = true;
+                        this.notify_success("Voice input started", cx);
+                    }
+                    Err(error) => this.fail(&format!("Voice input failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn retry_current(&mut self, cx: &mut Context<Self>) {
+        if self.streaming || self.busy {
+            return;
+        }
+        let text = self.current_task().and_then(|task| {
+            task.entries.iter().rev().find_map(|entry| match entry {
+                Entry::User { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+        });
+        let Some(text) = text else {
+            self.notify_success("There is no completed user turn to retry", cx);
+            return;
+        };
+        self.draft = text;
+        self.caret = self.draft.chars().count();
+        self.selection_anchor = None;
+        self.send(cx);
     }
 
     pub fn handle_input_key(
@@ -1645,9 +2158,6 @@ impl AppState {
     }
 
     fn import_live_threads(&mut self, threads: Vec<ServerThread>) {
-        if threads.is_empty() {
-            return;
-        }
         self.workspace
             .projects
             .retain(|project| project.id == "codex-app-gpui");
@@ -1662,7 +2172,9 @@ impl AppState {
             tasks: Vec::new(),
         };
         for thread in threads {
-            live.tasks.push(task_from_server(&thread));
+            if !live.tasks.iter().any(|task: &Task| task.id == thread.id) {
+                live.tasks.push(task_from_server(&thread));
+            }
         }
         self.workspace.projects.insert(0, live);
         if let Some(task) = self
@@ -1710,11 +2222,169 @@ impl AppState {
                 if !thread.updated_at.is_empty() {
                     task.updated_at = thread.updated_at;
                 }
+                task.archived = thread.archived;
+                if thread.archived {
+                    task.status = "archived".into();
+                }
             } else {
                 project.tasks.insert(0, task_from_server(&thread));
             }
         }
     }
+}
+
+fn model_options_from_value(value: &Value) -> Vec<ModelOption> {
+    let mut options = Vec::new();
+    collect_model_options(value, &mut options);
+    let mut seen = HashSet::new();
+    options.retain(|option| seen.insert(option.id.clone()));
+    options
+}
+
+fn collect_model_options(value: &Value, options: &mut Vec<ModelOption>) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_model_options(value, options);
+            }
+        }
+        Value::Object(object) => {
+            let id = ["model", "id", "slug"]
+                .iter()
+                .find_map(|key| object.get(*key).and_then(Value::as_str))
+                .filter(|id| !id.is_empty());
+            if let Some(id) = id {
+                let label = ["displayName", "display_name", "name", "title"]
+                    .iter()
+                    .find_map(|key| object.get(*key).and_then(Value::as_str))
+                    .filter(|label| !label.is_empty())
+                    .unwrap_or(id)
+                    .to_owned();
+                let mut reasoning = Vec::new();
+                if let Some(values) = object
+                    .get("supportedReasoningEfforts")
+                    .or_else(|| object.get("supported_reasoning_efforts"))
+                    .and_then(Value::as_array)
+                {
+                    for value in values {
+                        let effort = value
+                            .as_str()
+                            .or_else(|| value.get("reasoningEffort").and_then(Value::as_str))
+                            .or_else(|| value.get("reasoning_effort").and_then(Value::as_str))
+                            .or_else(|| value.get("id").and_then(Value::as_str));
+                        if let Some(effort) = effort.filter(|effort| !effort.is_empty()) {
+                            reasoning.push(effort.to_owned());
+                        }
+                    }
+                }
+                dedupe_strings(&mut reasoning);
+                options.push(ModelOption {
+                    id: id.to_owned(),
+                    label,
+                    reasoning,
+                });
+            }
+            for value in object.values() {
+                collect_model_options(value, options);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn named_values_from_data(value: &Value, keys: &[&str]) -> Vec<String> {
+    let mut values = Vec::new();
+    collect_named_values(value, keys, &mut values);
+    dedupe_strings(&mut values);
+    values
+}
+
+fn nested_named_values_from_data(value: &Value, containers: &[&str], keys: &[&str]) -> Vec<String> {
+    let mut values = Vec::new();
+    collect_nested_named_values(value, containers, keys, &mut values);
+    dedupe_strings(&mut values);
+    values
+}
+
+fn collect_named_values(value: &Value, keys: &[&str], values: &mut Vec<String>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_named_values(item, keys, values);
+            }
+        }
+        Value::Object(object) => {
+            for key in keys {
+                if let Some(name) = object.get(*key).and_then(Value::as_str) {
+                    if !name.is_empty() {
+                        values.push(name.to_owned());
+                    }
+                }
+            }
+            for item in object.values() {
+                collect_named_values(item, keys, values);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_nested_named_values(
+    value: &Value,
+    containers: &[&str],
+    keys: &[&str],
+    values: &mut Vec<String>,
+) {
+    if containers.is_empty() {
+        collect_named_values(value, keys, values);
+        return;
+    }
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_nested_named_values(item, containers, keys, values);
+            }
+        }
+        Value::Object(object) => {
+            for container in containers {
+                if let Some(value) = object.get(*container) {
+                    collect_named_values(value, keys, values);
+                    collect_nested_named_values(value, containers, keys, values);
+                }
+            }
+            for value in object.values() {
+                collect_nested_named_values(value, containers, keys, values);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn account_label_from_value(value: &Value) -> Option<String> {
+    let object = value
+        .get("account")
+        .or_else(|| value.get("user"))
+        .unwrap_or(value);
+    ["email", "name", "id", "type"]
+        .iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_str))
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn config_summary_from_value(value: &Value) -> Vec<String> {
+    let object = value.get("config").unwrap_or(value);
+    let mut keys = object
+        .as_object()
+        .map(|object| object.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    keys.sort();
+    keys
+}
+
+fn dedupe_strings(values: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    values.retain(|value| seen.insert(value.clone()));
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1727,10 +2397,14 @@ enum ThreadAction {
 fn connect_live(
     command: &str,
     cwd: Option<&str>,
-) -> anyhow::Result<(Arc<AppServerClient>, Vec<ServerThread>)> {
+) -> anyhow::Result<(Arc<AppServerClient>, Vec<ServerThread>, ServerCatalog)> {
     let client = Arc::new(AppServerClient::spawn(command)?);
     client.initialize()?;
     let mut threads = client.thread_list(None)?;
+    let archived_threads = client
+        .thread_list_with_options(None, Some(true))
+        .unwrap_or_default();
+    merge_threads(&mut threads, archived_threads);
     if threads.is_empty() && std::env::var_os("CODEX_APP_GPUI_CREATE_LIVE_THREAD").is_some() {
         if let Some(thread) = client
             .thread_start(cwd)?
@@ -1740,7 +2414,21 @@ fn connect_live(
             threads.push(thread);
         }
     }
-    Ok((client, threads))
+    let catalog = ServerCatalog::from_client(&client, cwd);
+    Ok((client, threads, catalog))
+}
+
+fn merge_threads(existing: &mut Vec<ServerThread>, additional: Vec<ServerThread>) {
+    let mut known = existing
+        .iter()
+        .map(|thread| thread.id.clone())
+        .collect::<HashSet<_>>();
+    for thread in additional {
+        if !known.contains(&thread.id) {
+            known.insert(thread.id.clone());
+            existing.push(thread);
+        }
+    }
 }
 
 fn task_from_server(thread: &ServerThread) -> Task {
@@ -1762,7 +2450,7 @@ fn task_from_server(thread: &ServerThread) -> Task {
         } else {
             thread.updated_at.clone()
         },
-        archived: false,
+        archived: thread.archived,
         pinned: false,
         entries: vec![Entry::System {
             id: format!("system-{}", thread.id),
@@ -1845,6 +2533,15 @@ fn normalize_item_status(status: String) -> String {
     }
 }
 
+fn sandbox_policy_wire(mode: &str) -> &str {
+    match mode {
+        "danger-full-access" => "dangerFullAccess",
+        "read-only" => "readOnly",
+        "workspace-write" => "workspaceWrite",
+        other => other,
+    }
+}
+
 fn normalize_plan_status(status: String) -> String {
     match status.as_str() {
         "completed" | "complete" => "complete".into(),
@@ -1863,15 +2560,23 @@ fn completed_task_status(status: &str) -> &'static str {
 }
 
 fn usage_from_value(value: &Value) -> Option<crate::model::Usage> {
-    let input = number_field(value, &["inputTokens", "input_tokens", "input"]);
-    let output = number_field(value, &["outputTokens", "output_tokens", "output"]);
+    let total = value.get("total").unwrap_or(value);
+    let last = value.get("last").unwrap_or(total);
+    let input = number_field(last, &["inputTokens", "input_tokens", "input"]);
+    let output = number_field(last, &["outputTokens", "output_tokens", "output"]);
     let cached = number_field(
-        value,
+        last,
         &["cachedInputTokens", "cached_input_tokens", "cached"],
     );
     let context = number_field(
         value,
-        &["totalTokens", "total_tokens", "contextTokens", "context"],
+        &[
+            "modelContextWindow",
+            "totalTokens",
+            "total_tokens",
+            "contextTokens",
+            "context",
+        ],
     );
     (input > 0 || output > 0 || cached > 0 || context > 0).then_some(crate::model::Usage {
         input,
@@ -1886,6 +2591,54 @@ fn number_field(value: &Value, names: &[&str]) -> u64 {
         .iter()
         .find_map(|name| value.get(*name).and_then(Value::as_u64))
         .unwrap_or_default()
+}
+
+fn diff_entry_from_value(id: &str, value: &Value) -> Option<Entry> {
+    let changes = value
+        .get("changes")
+        .and_then(Value::as_array)
+        .cloned()
+        .or_else(|| value.as_array().cloned());
+    if let Some(changes) = changes {
+        let mut additions = 0;
+        let mut deletions = 0;
+        let path = changes
+            .first()
+            .map(|change| string_field(change, &["path"]))
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| "File changes".into());
+        let summary = changes
+            .iter()
+            .map(|change| {
+                let diff = string_field(change, &["diff", "patch"]);
+                for line in diff.lines() {
+                    if line.starts_with('+') && !line.starts_with("+++") {
+                        additions += 1;
+                    } else if line.starts_with('-') && !line.starts_with("---") {
+                        deletions += 1;
+                    }
+                }
+                string_field(change, &["kind", "path"])
+            })
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(Entry::Diff {
+            id: id.into(),
+            path,
+            additions,
+            deletions,
+            summary,
+        });
+    }
+    let summary = value_text(value);
+    (!summary.is_empty()).then_some(Entry::Diff {
+        id: id.into(),
+        path: "Working tree".into(),
+        additions: summary.lines().filter(|line| line.starts_with('+')).count() as u32,
+        deletions: summary.lines().filter(|line| line.starts_with('-')).count() as u32,
+        summary,
+    })
 }
 
 fn is_empty_thread_read_error(error: &anyhow::Error) -> bool {
@@ -1906,6 +2659,13 @@ fn entry_from_server_item(item: &Value) -> Option<Entry> {
             id,
             text: string_field(item, &["text"]),
             time: "Live".into(),
+        }),
+        "hookPrompt" => Some(Entry::Tool {
+            id,
+            name: "Hook prompt".into(),
+            status: "complete".into(),
+            detail: string_field(item, &["fragments", "text"]),
+            output: String::new(),
         }),
         "plan" => Some(Entry::Reasoning {
             id,
@@ -1973,15 +2733,30 @@ fn entry_from_server_item(item: &Value) -> Option<Entry> {
                 summary,
             })
         }
-        "mcpToolCall" | "collabToolCall" | "collabAgentToolCall" | "webSearch" => {
-            Some(Entry::Tool {
-                id,
-                name: item_type.into(),
-                status: normalize_item_status(string_field(item, &["status"])),
-                detail: string_field(item, &["tool", "server", "query", "prompt"]),
-                output: string_field(item, &["result", "error"]),
-            })
-        }
+        "mcpToolCall"
+        | "dynamicToolCall"
+        | "collabToolCall"
+        | "collabAgentToolCall"
+        | "subAgentActivity"
+        | "webSearch"
+        | "sleep" => Some(Entry::Tool {
+            id,
+            name: item_type.into(),
+            status: normalize_item_status(string_field(item, &["status"])),
+            detail: string_field(
+                item,
+                &[
+                    "tool",
+                    "server",
+                    "query",
+                    "prompt",
+                    "agentPath",
+                    "kind",
+                    "durationMs",
+                ],
+            ),
+            output: string_field(item, &["result", "error", "agentsStates", "message"]),
+        }),
         "imageGeneration" | "imageView" => Some(Entry::Attachment {
             id,
             name: string_field(item, &["savedPath", "path", "revisedPrompt"]),
@@ -2046,6 +2821,23 @@ fn append_assistant_delta(task: &mut Task, item_id: &str, delta: &str) {
     }
 }
 
+fn append_user_delta(task: &mut Task, delta: &str) {
+    if let Some(Entry::User { text, .. }) = task
+        .entries
+        .iter_mut()
+        .rev()
+        .find(|entry| matches!(entry, Entry::User { .. }))
+    {
+        text.push_str(delta);
+    } else {
+        task.entries.push(Entry::User {
+            id: "realtime-user".into(),
+            text: delta.into(),
+            time: "Live".into(),
+        });
+    }
+}
+
 fn append_reasoning_delta(task: &mut Task, item_id: &str, delta: &str) {
     if let Some(Entry::Reasoning { text, .. }) = task
         .entries
@@ -2076,6 +2868,36 @@ fn append_tool_output(task: &mut Task, item_id: &str, delta: &str) {
             status: "running".into(),
             detail: String::new(),
             output: delta.into(),
+        });
+    }
+}
+
+fn update_tool_status(task: &mut Task, item_id: &str, status: &str) {
+    if let Some(Entry::Tool {
+        status: current, ..
+    }) = task
+        .entries
+        .iter_mut()
+        .find(|entry| entry_id(entry) == item_id)
+    {
+        *current = status.into();
+    }
+}
+
+fn append_diff_delta(task: &mut Task, item_id: &str, delta: &str) {
+    if let Some(Entry::Diff { summary, .. }) = task
+        .entries
+        .iter_mut()
+        .find(|entry| entry_id(entry) == item_id)
+    {
+        summary.push_str(delta);
+    } else {
+        task.entries.push(Entry::Diff {
+            id: item_id.into(),
+            path: "File changes".into(),
+            additions: delta.lines().filter(|line| line.starts_with('+')).count() as u32,
+            deletions: delta.lines().filter(|line| line.starts_with('-')).count() as u32,
+            summary: delta.into(),
         });
     }
 }
