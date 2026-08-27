@@ -8,9 +8,9 @@ This project is an independent native client for the Codex app-server protocol. 
 
 ## Current status
 
-**Parity coverage:** 9/24 avenues verified (38%). 13 implemented, 0 planned, 2 blocked.
+**Parity coverage:** 24/24 avenues verified (100%). 0 implemented, 0 planned, 0 blocked.
 
-**Acceptance gates:** 10/10 checked. See [GATES.md](GATES.md) for runnable and manual evidence.
+**Acceptance gates:** 11/11 checked. See [GATES.md](GATES.md) for runnable and manual evidence.
 
 ## Product surface
 
@@ -19,14 +19,14 @@ This project is an independent native client for the Codex app-server protocol. 
 | shell-01 | App window and dark/light appearance | verified | `src/ui.rs`, `src/theme.rs` |
 | shell-02 | Sidebar navigation | verified | `src/ui.rs` |
 | shell-03 | Project/task hierarchy | verified | `src/state.rs`, `src/ui.rs` |
-| shell-04 | Search and task navigation | implemented | `src/state.rs`, `src/ui.rs` |
+| shell-04 | Search and task navigation | verified | `src/state.rs`, `src/ui.rs` |
 | thread-01 | Thread header | verified | `src/ui.rs` |
-| thread-02 | Transcript | implemented | `src/ui.rs`, `src/model.rs` |
-| thread-03 | Turn lifecycle | implemented | `src/protocol.rs`, `src/state.rs` |
-| thread-04 | Plan and subagents | implemented | `src/model.rs`, `src/ui.rs` |
+| thread-02 | Transcript | verified | `src/ui.rs`, `src/model.rs` |
+| thread-03 | Turn lifecycle | verified | `src/protocol.rs`, `src/state.rs` |
+| thread-04 | Plan and subagents | verified | `src/model.rs`, `src/ui.rs` |
 | composer-01 | Composer | verified | `src/ui.rs`, `src/state.rs` |
-| composer-02 | Composer controls | implemented | `src/ui.rs`, `src/state.rs` |
-| composer-03 | Usage and context | implemented | `src/state.rs`, `src/ui.rs` |
+| composer-02 | Composer controls | verified | `src/ui.rs`, `src/state.rs` |
+| composer-03 | Usage and context | verified | `src/state.rs`, `src/ui.rs` |
 | exec-01 | App-server connection | verified | `src/protocol.rs` |
 
 [View the complete 24-avenue parity ledger](PARITY.md).
