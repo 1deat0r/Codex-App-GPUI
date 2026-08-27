@@ -86,6 +86,28 @@ try {
   await send("thread/read", { threadId, includeTurns: true });
   await send("thread/fork", { threadId });
   await send("thread/resume", { threadId });
+  const queued = await send("thread/queue/add", {
+    threadId,
+    clientUserMessageId: "fixture-client-message-1",
+    input: [{ type: "text", text: "queued fixture turn" }],
+  });
+  const queuedId = queued?.queuedSubmission?.id;
+  if (typeof queuedId !== "string" || !queuedId) throw new Error("queue/add did not return a submission id");
+  const listedQueue = await send("thread/queue/list", { threadId });
+  if (listedQueue.data?.length !== 1 || listedQueue.data[0].id !== queuedId) {
+    throw new Error("queue/list did not return the queued submission");
+  }
+  await send("thread/queue/update", {
+    threadId,
+    queuedSubmissionId: queuedId,
+    input: [{ type: "text", text: "updated queued fixture turn" }],
+  });
+  await send("thread/queue/reorder", { threadId, queuedSubmissionIds: [queuedId] });
+  const deletedQueue = await send("thread/queue/delete", {
+    threadId,
+    queuedSubmissionId: queuedId,
+  });
+  if (deletedQueue.deleted !== true) throw new Error("queue/delete did not delete the submission");
   await send("turn/start", { threadId, input: [{ type: "text", text: "acceptance" }] });
   await waitFor(() => requests.some((request) => request.method === "item/commandExecution/requestApproval"), "approval request");
   await waitFor(() => events.some((event) => event.method === "turn/completed"), "completed turn");

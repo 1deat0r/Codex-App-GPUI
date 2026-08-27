@@ -11,6 +11,7 @@ let nextThread = 1;
 let nextTurn = 1;
 let nextItem = 1;
 let nextApproval = 900;
+let nextQueuedSubmission = 1;
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -39,6 +40,7 @@ function createThread(name = "Untitled task") {
     updatedAt: "Fixture",
     archived: false,
     turns: [],
+    queue: [],
   };
   threads.set(id, thread);
   return thread;
@@ -301,6 +303,52 @@ function handle(message) {
       }
       case "thread/resume":
         response(id, { thread: threads.get(params.threadId) ?? createThread() });
+        break;
+      case "thread/queue/add": {
+        const thread = threads.get(params.threadId) ?? createThread();
+        const queuedSubmission = {
+          id: `fixture-queued-${nextQueuedSubmission++}`,
+          clientUserMessageId: params.clientUserMessageId,
+          input: params.input ?? [],
+        };
+        thread.queue.push(queuedSubmission);
+        response(id, { queuedSubmission });
+        notify("thread/queue/changed", { threadId: thread.id });
+        break;
+      }
+      case "thread/queue/list": {
+        const thread = threads.get(params.threadId) ?? createThread();
+        response(id, { data: thread.queue });
+        break;
+      }
+      case "thread/queue/update": {
+        const thread = threads.get(params.threadId) ?? createThread();
+        const queuedSubmission = thread.queue.find((item) => item.id === params.queuedSubmissionId);
+        if (queuedSubmission) queuedSubmission.input = params.input ?? [];
+        response(id, { queuedSubmission });
+        notify("thread/queue/changed", { threadId: thread.id });
+        break;
+      }
+      case "thread/queue/delete": {
+        const thread = threads.get(params.threadId) ?? createThread();
+        const before = thread.queue.length;
+        thread.queue = thread.queue.filter((item) => item.id !== params.queuedSubmissionId);
+        response(id, { deleted: thread.queue.length !== before });
+        notify("thread/queue/changed", { threadId: thread.id });
+        break;
+      }
+      case "thread/queue/reorder": {
+        const thread = threads.get(params.threadId) ?? createThread();
+        const positions = new Map((params.queuedSubmissionIds ?? []).map((queuedId, index) => [queuedId, index]));
+        thread.queue.sort((left, right) =>
+          (positions.get(left.id) ?? Number.MAX_SAFE_INTEGER)
+          - (positions.get(right.id) ?? Number.MAX_SAFE_INTEGER));
+        response(id, {});
+        notify("thread/queue/changed", { threadId: thread.id });
+        break;
+      }
+      case "thread/queue/start":
+        response(id, {});
         break;
       case "thread/name/set": {
         const thread = threads.get(params.threadId);
