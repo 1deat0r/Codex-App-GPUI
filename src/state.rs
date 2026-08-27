@@ -1,6 +1,7 @@
 //! UI state and interaction reducer for the native client.
 
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -855,6 +856,7 @@ impl AppState {
                 ) {
                     if let Some(task) = self.task_mut_by_id(thread_id) {
                         append_assistant_delta(task, item_id, delta);
+                        persist = true;
                     }
                 }
             }
@@ -866,6 +868,7 @@ impl AppState {
                 ) {
                     if let Some(task) = self.task_mut_by_id(thread_id) {
                         append_reasoning_delta(task, item_id, delta);
+                        persist = true;
                     }
                 }
             }
@@ -898,6 +901,7 @@ impl AppState {
                 ) {
                     if let Some(task) = self.task_mut_by_id(thread_id) {
                         append_tool_output(task, item_id, delta);
+                        persist = true;
                     }
                 }
             }
@@ -3108,7 +3112,7 @@ impl AppState {
         if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
             return false;
         }
-        let action = apply_input_edit_with_selection(
+        let action = apply_input_edit_with_enter(
             &mut self.draft,
             &mut self.caret,
             &mut self.selection_anchor,
@@ -3116,22 +3120,8 @@ impl AppState {
             key.key_char.as_deref(),
             key.modifiers.shift,
             self.streaming,
+            self.settings.enter_behavior != "newline",
         );
-        let action = if key.key == "enter"
-            && !key.modifiers.shift
-            && !self.streaming
-            && self.settings.enter_behavior == "newline"
-        {
-            replace_selection(
-                &mut self.draft,
-                &mut self.caret,
-                &mut self.selection_anchor,
-                "\n",
-            );
-            InputAction::None
-        } else {
-            action
-        };
         if action == InputAction::Send {
             self.send(cx);
         } else {
@@ -3775,7 +3765,7 @@ fn generic_event_entry(
     }
 }
 
-fn event_entry_id(method: &str, params: &Value, entry_index: usize) -> String {
+fn event_entry_id(method: &str, params: &Value, _entry_index: usize) -> String {
     let correlation = string_field(
         params,
         &[
@@ -3789,10 +3779,20 @@ fn event_entry_id(method: &str, params: &Value, entry_index: usize) -> String {
         ],
     );
     if correlation.is_empty() {
-        format!("event-{}-{entry_index}", method.replace('/', "-"))
+        format!(
+            "event-{}-{:016x}",
+            method.replace('/', "-"),
+            stable_hash(&(method.to_owned() + "\0" + &params.to_string()))
+        )
     } else {
         format!("event-{}-{correlation}", method.replace('/', "-"))
     }
+}
+
+fn stable_hash(value: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn notification_detail(params: &Value) -> String {
@@ -4085,7 +4085,10 @@ fn entry_from_server_item(item: &Value) -> Option<Entry> {
         .unwrap_or("unknown");
     let id = string_field(item, &["id"]);
     let id = if id.is_empty() {
-        format!("item-{item_type}-{}", item.to_string().len())
+        format!(
+            "item-{item_type}-{:016x}",
+            stable_hash(&(item_type.to_owned() + "\0" + &item.to_string()))
+        )
     } else {
         id
     };
@@ -4376,7 +4379,7 @@ pub fn apply_input_edit(
     streaming: bool,
 ) -> InputAction {
     let mut selection_anchor = None;
-    apply_input_edit_with_selection(
+    apply_input_edit_with_enter(
         draft,
         caret,
         &mut selection_anchor,
@@ -4384,6 +4387,7 @@ pub fn apply_input_edit(
         key_char,
         shift,
         streaming,
+        true,
     )
 }
 
@@ -4396,6 +4400,28 @@ pub fn apply_input_edit_with_selection(
     shift: bool,
     streaming: bool,
 ) -> InputAction {
+    apply_input_edit_with_enter(
+        draft,
+        caret,
+        selection_anchor,
+        key,
+        key_char,
+        shift,
+        streaming,
+        true,
+    )
+}
+
+pub fn apply_input_edit_with_enter(
+    draft: &mut String,
+    caret: &mut usize,
+    selection_anchor: &mut Option<usize>,
+    key: &str,
+    key_char: Option<&str>,
+    shift: bool,
+    streaming: bool,
+    enter_sends: bool,
+) -> InputAction {
     if streaming {
         return InputAction::None;
     }
@@ -4406,7 +4432,8 @@ pub fn apply_input_edit_with_selection(
     }
     match key {
         "enter" if shift => replace_selection(draft, caret, selection_anchor, "\n"),
-        "enter" => return InputAction::Send,
+        "enter" if enter_sends => return InputAction::Send,
+        "enter" => replace_selection(draft, caret, selection_anchor, "\n"),
         "backspace" => {
             if !delete_selection(draft, caret, selection_anchor) && *caret > 0 {
                 *caret -= 1;
@@ -4783,6 +4810,41 @@ mod tests {
     }
 
     #[test]
+    fn editor_enter_preference_switches_between_send_and_newline() {
+        let mut draft = "hello".to_string();
+        let mut caret = draft.chars().count();
+        let mut selection = None;
+        assert_eq!(
+            apply_input_edit_with_enter(
+                &mut draft,
+                &mut caret,
+                &mut selection,
+                "enter",
+                None,
+                false,
+                false,
+                false,
+            ),
+            InputAction::None
+        );
+        assert_eq!(draft, "hello\n");
+        assert_eq!(
+            apply_input_edit_with_enter(
+                &mut draft,
+                &mut caret,
+                &mut selection,
+                "enter",
+                None,
+                false,
+                false,
+                true,
+            ),
+            InputAction::Send
+        );
+        assert_eq!(draft, "hello\n");
+    }
+
+    #[test]
     fn server_catalog_extracts_models_reasoning_and_nested_capabilities() {
         let value = json!({
             "data": [
@@ -5001,8 +5063,18 @@ mod tests {
             "guardianWarning",
             "hook/completed",
             "hook/started",
+            "item/agentMessage/delta",
             "item/autoApprovalReview/completed",
             "item/autoApprovalReview/started",
+            "item/commandExecution/outputDelta",
+            "item/commandExecution/terminalInteraction",
+            "item/fileChange/outputDelta",
+            "item/fileChange/patchUpdated",
+            "item/mcpToolCall/progress",
+            "item/plan/delta",
+            "item/reasoning/summaryPartAdded",
+            "item/reasoning/summaryTextDelta",
+            "item/reasoning/textDelta",
             "item/started",
             "item/completed",
             "mcpServer/oauthLogin/completed",
@@ -5014,6 +5086,7 @@ mod tests {
             "process/outputDelta",
             "project/changed",
             "remoteControl/status/changed",
+            "serverRequest/resolved",
             "skills/changed",
             "thread/archived",
             "thread/closed",
@@ -5037,6 +5110,7 @@ mod tests {
             "thread/reverted",
             "thread/settings/updated",
             "thread/status/changed",
+            "thread/started",
             "thread/tokenUsage/updated",
             "thread/unarchived",
             "turn/completed",
@@ -5057,5 +5131,36 @@ mod tests {
             );
             assert!(entry.is_some(), "missing fallback for {method}");
         }
+    }
+
+    #[test]
+    fn idless_items_use_stable_content_ids_without_collisions() {
+        let first = entry_from_server_item(&json!({
+            "type": "futureItem",
+            "message": "first"
+        }))
+        .unwrap();
+        let first_again = entry_from_server_item(&json!({
+            "type": "futureItem",
+            "message": "first"
+        }))
+        .unwrap();
+        let second = entry_from_server_item(&json!({
+            "type": "futureItem",
+            "message": "second"
+        }))
+        .unwrap();
+        assert_eq!(entry_id(&first), entry_id(&first_again));
+        assert_ne!(entry_id(&first), entry_id(&second));
+
+        let event = json!({ "message": "same" });
+        assert_eq!(
+            event_entry_id("future/event", &event, 0),
+            event_entry_id("future/event", &event, 99)
+        );
+        assert_ne!(
+            event_entry_id("future/event", &event, 0),
+            event_entry_id("future/other", &event, 0)
+        );
     }
 }

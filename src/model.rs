@@ -802,4 +802,48 @@ mod tests {
         };
         assert_eq!(usage.cache_rate(), Some(80));
     }
+
+    #[test]
+    fn settings_default_covers_reference_preferences() {
+        let settings = Settings::default();
+        assert_eq!(settings.enter_behavior, "send");
+        assert_eq!(settings.language, "system");
+        assert_eq!(settings.terminal_shell, "system");
+        assert_eq!(settings.worktree_keep_count, 5);
+        assert!(settings.show_bottom_panel_control);
+        assert!(settings.show_full_access);
+        assert!(settings.queue_follow_ups);
+        assert!(settings.voice_enabled);
+        assert!(!settings.computer_use_enabled);
+    }
+
+    #[test]
+    fn settings_deserialize_legacy_snapshots_with_new_fields_missing() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "theme": "dark",
+            "default_model": "legacy-model",
+            "default_reasoning": "high",
+            "approval_mode": "on-request",
+            "sandbox_mode": "workspace-write"
+        }))
+        .unwrap();
+        assert_eq!(settings.theme, "dark");
+        assert_eq!(settings.default_model, "legacy-model");
+        assert_eq!(settings.enter_behavior, "send");
+        assert_eq!(settings.worktree_keep_count, 5);
+        assert!(settings.show_bottom_panel_control);
+    }
+
+    #[test]
+    fn settings_page_inventory_matches_reference_groups() {
+        assert!(SettingsPage::ALL.contains(&SettingsPage::General));
+        assert!(SettingsPage::ALL.contains(&SettingsPage::BrowserUse));
+        assert!(SettingsPage::ALL.contains(&SettingsPage::CodeReview));
+        assert!(SettingsPage::ALL.contains(&SettingsPage::DataControls));
+        assert_eq!(SettingsPage::General.group(), "Personal");
+        assert_eq!(SettingsPage::Plugins.group(), "Integrations");
+        assert_eq!(SettingsPage::Worktrees.group(), "Coding");
+        assert_eq!(SettingsPage::DataControls.group(), "Archived");
+        assert!(SettingsPage::ALL.len() >= 30);
+    }
 }

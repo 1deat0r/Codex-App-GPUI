@@ -220,6 +220,50 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_round_trip_preserves_view_and_reference_settings() {
+        let directory = std::env::temp_dir().join(format!(
+            "codex-app-gpui-settings-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let path = directory.join("state.json");
+        let mut original = Snapshot::demo();
+        original.content_layout = "Review".into();
+        original.bottom_panel_open = true;
+        original.side_panel_open = true;
+        original.fullscreen = true;
+        original.settings.enter_behavior = "newline".into();
+        original.settings.language = "English".into();
+        original.settings.worktree_auto_cleanup = true;
+        original.settings.worktree_keep_count = 20;
+        original.settings.pull_request_instructions = "Run the checks".into();
+        save_to(&path, &original).unwrap();
+        let restored = load_from(&path).unwrap().unwrap();
+        assert_eq!(restored, original);
+        let encoded = fs::read_to_string(&path).unwrap();
+        assert!(!contains_credentials(&encoded));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn snapshot_migration_defaults_view_and_settings_fields() {
+        let demo = Snapshot::demo();
+        let legacy = serde_json::json!({
+            "workspace": demo.workspace,
+            "settings": {},
+            "selected_project": "codex-app-gpui",
+            "selected_task": "codex-app-gpui-parity"
+        });
+        let restored: Snapshot = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.content_layout, "Chat");
+        assert!(!restored.bottom_panel_open);
+        assert!(!restored.side_panel_open);
+        assert!(!restored.fullscreen);
+        assert_eq!(restored.settings.enter_behavior, "send");
+        assert_eq!(restored.settings.language, "system");
+    }
+
+    #[test]
     fn credential_detector_rejects_secret_like_values() {
         assert!(contains_credentials("authorization: Bearer token"));
         assert!(contains_credentials("sk-example"));
