@@ -2958,7 +2958,7 @@ fn settings_page_body(
             ))
             .child(setting_row(
                 "Enter behavior",
-                "Choose whether Enter sends or inserts a new line",
+                "Choose when Enter sends a prompt or inserts a new line",
                 state.settings.enter_behavior.clone(),
                 Some(Box::new(
                     window.listener_for(&cx.entity(), |this, _event, _window, cx| {
@@ -2995,7 +2995,7 @@ fn settings_page_body(
                 cx,
             ))
             .child(setting_toggle(
-                "Educational tips",
+                "Show educational tips",
                 "Show educational tips while using Codex",
                 state.settings.show_educational_tips,
                 "educational-tips",
@@ -3004,8 +3004,8 @@ fn settings_page_body(
                 cx,
             ))
             .child(setting_toggle(
-                "Ambient suggestions",
-                "Enable ambient suggestions in the task list",
+                "Enable ambient suggestions",
+                "Suggest what to do next by searching project files and connected apps",
                 state.settings.ambient_suggestions,
                 "ambient-suggestions",
                 state,
@@ -3013,8 +3013,8 @@ fn settings_page_body(
                 cx,
             ))
             .child(setting_toggle(
-                "Queue follow-ups",
-                "Queue follow-ups while a turn is running",
+                "Queue follow-ups while a task runs",
+                "Queue follow-ups while Codex runs or steer the current run",
                 state.settings.queue_follow_ups,
                 "queue-follow-ups",
                 state,
@@ -3095,8 +3095,8 @@ fn settings_page_body(
                 )),
             ))
             .child(setting_row(
-                "Font size",
-                "Base interface size",
+                "UI font size",
+                "Adjust the base size used for the ChatGPT UI",
                 format!("{} px", state.settings.font_size),
                 Some(Box::new(
                     window.listener_for(&cx.entity(), |this, _event, _window, cx| {
@@ -3106,7 +3106,7 @@ fn settings_page_body(
             ))
             .child(setting_row(
                 "Code font size",
-                "Font size used for commands and code output",
+                "Adjust the base size used for code across chats and diffs",
                 format!("{} px", state.settings.code_font_size),
                 Some(Box::new(
                     window.listener_for(&cx.entity(), |this, _event, _window, cx| {
@@ -3124,7 +3124,7 @@ fn settings_page_body(
                 cx,
             ))
             .child(setting_toggle(
-                "Context window usage",
+                "Show context window usage in the composer",
                 "Show context window usage in the composer",
                 state.settings.show_context_usage,
                 "context-usage",
@@ -3254,6 +3254,27 @@ fn settings_page_body(
                     state.catalog.skills.join(", ")
                 },
                 None,
+            ))
+            .child(setting_row(
+                "Extra skill folders",
+                "Additional folders searched for reusable skills",
+                if state.skill_roots.is_empty() {
+                    "None configured".into()
+                } else {
+                    state.skill_roots.join(", ")
+                },
+                None,
+            ))
+            .child(setting_row(
+                "Add skill folder",
+                "Choose a folder to include in the skill search path",
+                "＋".into(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.pick_skill_root(cx);
+                    },
+                ))),
             ))
             .child(setting_row(
                 "Refresh",
@@ -3408,17 +3429,17 @@ fn settings_page_body(
                 ))),
             ))
             .child(setting_toggle(
-                "Git-based review",
-                "Enable review actions for the current repository",
-                state.settings.git_review_enabled,
-                "git-review",
+                "Disable Git-Based Review",
+                "Only show the last turn in Review and avoid Git operations",
+                !state.settings.git_review_enabled,
+                "git-review-disabled",
                 state,
                 window,
                 cx,
             ))
             .child(setting_toggle(
-                "Draft pull requests",
-                "Create pull requests as drafts by default",
+                "Create draft pull requests",
+                "Use draft pull requests by default when creating PRs from Codex",
                 state.settings.draft_prs,
                 "draft-prs",
                 state,
@@ -3426,8 +3447,8 @@ fn settings_page_body(
                 cx,
             ))
             .child(setting_toggle(
-                "Force push",
-                "Allow force-push actions when explicitly requested",
+                "Always force push",
+                "Use force-with-lease when pushing from Codex",
                 state.settings.force_push,
                 "force-push",
                 state,
@@ -3446,8 +3467,8 @@ fn settings_page_body(
                 ))),
             ))
             .child(setting_row(
-                "Merge method",
-                "Default pull request merge strategy",
+                "Pull request merge method",
+                "Choose how Codex merges pull requests",
                 state.settings.merge_method.clone(),
                 Some(Box::new(window.listener_for(
                     &cx.entity(),
@@ -3468,10 +3489,46 @@ fn settings_page_body(
                 ))),
             ))
             .child(setting_toggle(
-                "Auto merge",
-                "Enable automatic merging after checks pass",
+                "Watch and fix pull requests",
+                "Continue watching pull requests and apply the saved guidance",
+                state.settings.watch_and_fix_pull_requests,
+                "watch-pull-requests",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_toggle(
+                "Auto-merge when ready",
+                "Continue watching until the pull request is merged",
                 state.settings.auto_merge,
                 "auto-merge",
+                state,
+                window,
+                cx,
+            ))
+            .child(instruction_setting(
+                "commit-instructions",
+                "Commit instructions",
+                "Added to commit message generation prompts",
+                &state.settings.commit_instructions,
+                state,
+                window,
+                cx,
+            ))
+            .child(instruction_setting(
+                "pull-request-instructions",
+                "Pull request instructions",
+                "Added to PR title and description generation prompts",
+                &state.settings.pull_request_instructions,
+                state,
+                window,
+                cx,
+            ))
+            .child(instruction_setting(
+                "pull-request-watch-instructions",
+                "Pull request watch instructions",
+                "Guidance used while watching and fixing pull requests",
+                &state.settings.pull_request_watch_instructions,
                 state,
                 window,
                 cx,
@@ -3619,11 +3676,14 @@ fn extended_settings_page(
             .flex()
             .flex_col()
             .gap_2()
-            .child(setting_row(
+            .child(instruction_setting(
+                "custom-instructions",
                 "Custom instructions",
-                "Instructions are delegated to Codex configuration",
-                "Configured in app-server".into(),
-                None,
+                "Instructions used to personalize responses across chats",
+                &state.settings.custom_instructions,
+                state,
+                window,
+                cx,
             ))
             .child(setting_row(
                 "Projectless task folder",
@@ -3820,13 +3880,17 @@ fn extended_settings_page(
             .child(setting_row(
                 "Hook status",
                 "Configured hook definitions are read from the current environment",
-                if state.connection == crate::state::ConnectionState::Live {
-                    "Server-backed"
+                if state.catalog.hooks.is_empty() {
+                    "None reported".into()
                 } else {
-                    "Local fixture"
-                }
-                .into(),
-                None,
+                    state.catalog.hooks.join(", ")
+                },
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.refresh_catalog(cx);
+                    },
+                ))),
             )),
         SettingsPage::Connections => capability_page(
             "Connections",
@@ -4135,6 +4199,102 @@ fn capability_page(title: &'static str, description: &'static str, connected: bo
             "Server-owned".into(),
             None,
         ))
+}
+
+fn instruction_setting(
+    field: &'static str,
+    title: &'static str,
+    description: &'static str,
+    value: &str,
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
+    if state.settings_editor == Some(field) {
+        let draft = if state.settings_draft.is_empty() {
+            "Click to add instructions".to_owned()
+        } else {
+            render_with_caret(&state.settings_draft, state.settings_caret)
+        };
+        return div()
+            .id(ElementId::Name(
+                format!("instruction-editor-{field}").into(),
+            ))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .bg(theme::bg_surface())
+            .border_1()
+            .border_color(theme::accent())
+            .rounded_lg()
+            .px_4()
+            .py_3()
+            .child(
+                div()
+                    .text_size(rems(0.82))
+                    .text_color(theme::text())
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(rems(0.7))
+                    .text_color(theme::text_faint())
+                    .child(description),
+            )
+            .child(
+                div()
+                    .id(ElementId::Name(format!("instruction-input-{field}").into()))
+                    .min_h(px(86.0))
+                    .max_h(px(180.0))
+                    .w_full()
+                    .px_2()
+                    .py_2()
+                    .cursor_text()
+                    .track_focus(&state.settings_focus)
+                    .tab_index(0)
+                    .text_size(rems(0.8))
+                    .text_color(if state.settings_draft.is_empty() {
+                        theme::text_faint()
+                    } else {
+                        theme::text()
+                    })
+                    .whitespace_normal()
+                    .child(draft)
+                    .on_click(
+                        window.listener_for(&cx.entity(), |this, _event, window, _cx| {
+                            window.focus(&this.settings_focus);
+                        }),
+                    )
+                    .on_key_down(
+                        window.listener_for(&cx.entity(), |this, event, window, cx| {
+                            this.handle_instruction_key(event, window, cx);
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(rems(0.64))
+                    .text_color(theme::text_faint())
+                    .child("Cmd/Ctrl+Enter to save · Escape to cancel"),
+            );
+    }
+
+    let display = if value.trim().is_empty() {
+        "Not set".to_owned()
+    } else {
+        value.to_owned()
+    };
+    setting_row(
+        title,
+        description,
+        display,
+        Some(Box::new(window.listener_for(
+            &cx.entity(),
+            move |this, _event, window, cx| {
+                this.begin_instruction_edit(field, window, cx);
+            },
+        ))),
+    )
 }
 
 fn setting_row(

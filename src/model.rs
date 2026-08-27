@@ -257,6 +257,8 @@ pub struct Settings {
     pub review_delivery: String,
     #[serde(default)]
     pub auto_merge: bool,
+    #[serde(default)]
+    pub watch_and_fix_pull_requests: bool,
     #[serde(default = "default_true")]
     pub show_bottom_panel_control: bool,
     #[serde(default = "default_true")]
@@ -271,6 +273,8 @@ pub struct Settings {
     pub enter_behavior: String,
     #[serde(default)]
     pub projectless_task_folder: String,
+    #[serde(default)]
+    pub custom_instructions: String,
     #[serde(default = "default_language")]
     pub language: String,
     #[serde(default = "default_terminal_shell")]
@@ -285,6 +289,8 @@ pub struct Settings {
     pub commit_instructions: String,
     #[serde(default)]
     pub pull_request_instructions: String,
+    #[serde(default)]
+    pub pull_request_watch_instructions: String,
     #[serde(default = "default_true")]
     pub voice_enabled: bool,
     #[serde(default = "default_true")]
@@ -371,6 +377,7 @@ impl Default for Settings {
             merge_method: default_merge_method(),
             review_delivery: default_review_delivery(),
             auto_merge: false,
+            watch_and_fix_pull_requests: false,
             show_bottom_panel_control: true,
             show_full_access: true,
             show_educational_tips: true,
@@ -378,6 +385,7 @@ impl Default for Settings {
             queue_follow_ups: true,
             enter_behavior: default_enter_behavior(),
             projectless_task_folder: String::new(),
+            custom_instructions: String::new(),
             language: default_language(),
             terminal_shell: default_terminal_shell(),
             worktree_auto_fetch: false,
@@ -385,6 +393,7 @@ impl Default for Settings {
             worktree_keep_count: default_worktree_keep_count(),
             commit_instructions: String::new(),
             pull_request_instructions: String::new(),
+            pull_request_watch_instructions: String::new(),
             voice_enabled: true,
             analytics_enabled: true,
             debug_logging: false,

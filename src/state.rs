@@ -57,6 +57,7 @@ pub struct ServerCatalog {
     pub plugins: Vec<String>,
     pub available_plugins: Vec<String>,
     pub skills: Vec<String>,
+    pub hooks: Vec<String>,
     pub mcp_servers: Vec<String>,
     pub account_label: Option<String>,
     pub config_summary: Vec<String>,
@@ -151,6 +152,21 @@ impl ServerCatalog {
                 &["skills", "data"],
                 &["name", "displayName", "id"],
             );
+        }
+        if let Ok(value) = client.hooks_list(Some(
+            &cwd.filter(|cwd| !cwd.is_empty())
+                .map(|cwd| vec![cwd.to_owned()])
+                .unwrap_or_default(),
+        )) {
+            catalog.hooks = nested_named_values_from_data(
+                &value,
+                &["hooks", "data"],
+                &["name", "displayName", "id", "event"],
+            );
+            if catalog.hooks.is_empty() {
+                catalog.hooks =
+                    named_values_from_data(&value, &["name", "displayName", "id", "event"]);
+            }
         }
         if let Ok(value) = client.mcp_server_status_list(None) {
             catalog.mcp_servers = named_values_from_data(&value, &["name", "displayName", "id"]);
@@ -439,6 +455,7 @@ pub struct AppState {
     pub live_client: Option<Arc<AppServerClient>>,
     pub catalog: ServerCatalog,
     pub active_app: Option<String>,
+    pub skill_roots: Vec<String>,
     pub voice_active: bool,
     pub active_turn_id: Option<String>,
     pub pending_interaction: Option<PendingInteraction>,
@@ -449,12 +466,17 @@ pub struct AppState {
     pub rename_draft: String,
     pub rename_caret: usize,
     pub rename_selection_anchor: Option<usize>,
+    pub settings_editor: Option<&'static str>,
+    pub settings_draft: String,
+    pub settings_caret: usize,
+    pub settings_selection_anchor: Option<usize>,
     pub query_selection_anchor: Option<usize>,
     event_loop_started: bool,
     pub root_focus: FocusHandle,
     pub input_focus: FocusHandle,
     pub search_focus: FocusHandle,
     pub rename_focus: FocusHandle,
+    pub settings_focus: FocusHandle,
 }
 
 impl AppState {
@@ -489,6 +511,7 @@ impl AppState {
             live_client: None,
             catalog: ServerCatalog::default(),
             active_app: None,
+            skill_roots: Vec::new(),
             voice_active: false,
             active_turn_id: None,
             pending_interaction: None,
@@ -502,12 +525,17 @@ impl AppState {
             rename_draft: String::new(),
             rename_caret: 0,
             rename_selection_anchor: None,
+            settings_editor: None,
+            settings_draft: String::new(),
+            settings_caret: 0,
+            settings_selection_anchor: None,
             query_selection_anchor: None,
             event_loop_started: false,
             root_focus: cx.focus_handle(),
             input_focus: cx.focus_handle(),
             search_focus: cx.focus_handle(),
             rename_focus: cx.focus_handle(),
+            settings_focus: cx.focus_handle(),
         };
         state.ensure_selection();
         state
@@ -2662,6 +2690,71 @@ impl AppState {
         .detach();
     }
 
+    pub fn pick_skill_root(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Add skill folder".into()),
+        });
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = receiver.await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(Ok(Some(paths))) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            let path = path.display().to_string();
+                            if !this.skill_roots.iter().any(|root| root == &path) {
+                                this.skill_roots.push(path.clone());
+                            }
+                            let Some(client) = this.live_client.clone() else {
+                                this.notify_success("Skill folder added locally", cx);
+                                return;
+                            };
+                            let roots = this.skill_roots.clone();
+                            let async_cx = cx.to_async();
+                            cx.spawn(
+                                move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                                    let result = async_cx
+                                        .background_executor()
+                                        .spawn(async move {
+                                            smol::unblock(move || {
+                                                client.skills_extra_roots_set(&roots)
+                                            })
+                                            .await
+                                        })
+                                        .await;
+                                    let _ =
+                                        this.update(
+                                            &mut async_cx.clone(),
+                                            |this, cx| match result {
+                                                Ok(_) => {
+                                                    this.refresh_catalog(cx);
+                                                    this.notify_success("Skill folder added", cx);
+                                                }
+                                                Err(error) => this.fail(
+                                                    &format!("Skill folder update failed: {error}"),
+                                                    cx,
+                                                ),
+                                            },
+                                        );
+                                },
+                            )
+                            .detach();
+                        }
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(error)) => {
+                        this.fail(&format!("Skill folder picker failed: {error}"), cx)
+                    }
+                    Err(error) => this.fail(&format!("Skill folder picker cancelled: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
     pub fn pick_project(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -3053,6 +3146,68 @@ impl AppState {
         self.menu_open = false;
         window.focus(&self.rename_focus);
         cx.notify();
+    }
+
+    fn instruction_value(&self, field: &str) -> &str {
+        match field {
+            "custom-instructions" => &self.settings.custom_instructions,
+            "commit-instructions" => &self.settings.commit_instructions,
+            "pull-request-instructions" => &self.settings.pull_request_instructions,
+            "pull-request-watch-instructions" => &self.settings.pull_request_watch_instructions,
+            _ => "",
+        }
+    }
+
+    pub fn begin_instruction_edit(
+        &mut self,
+        field: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_draft = self.instruction_value(field).to_owned();
+        self.settings_caret = self.settings_draft.chars().count();
+        self.settings_selection_anchor = None;
+        self.settings_editor = Some(field);
+        window.focus(&self.settings_focus);
+        cx.notify();
+    }
+
+    pub fn cancel_instruction_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_editor = None;
+        self.settings_draft.clear();
+        self.settings_caret = 0;
+        self.settings_selection_anchor = None;
+        window.focus(&self.root_focus);
+        cx.notify();
+    }
+
+    pub fn commit_instruction_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(field) = self.settings_editor.take() else {
+            return;
+        };
+        let value = self.settings_draft.trim().to_owned();
+        match field {
+            "custom-instructions" => self.settings.custom_instructions = value,
+            "commit-instructions" => self.settings.commit_instructions = value,
+            "pull-request-instructions" => self.settings.pull_request_instructions = value,
+            "pull-request-watch-instructions" => {
+                self.settings.pull_request_watch_instructions = value
+            }
+            _ => {}
+        }
+        self.settings_draft.clear();
+        self.settings_caret = 0;
+        self.settings_selection_anchor = None;
+        window.focus(&self.root_focus);
+        self.persist(cx);
+        let message = match field {
+            "custom-instructions" => "Custom instructions saved",
+            "commit-instructions" => "Commit instructions saved",
+            "pull-request-instructions" => "Pull request instructions saved",
+            "pull-request-watch-instructions" => "Pull request watch instructions saved",
+            _ => "Instructions saved",
+        };
+        self.notify_success(message, cx);
     }
 
     pub fn cancel_rename(&mut self, cx: &mut Context<Self>) {
@@ -3655,9 +3810,16 @@ impl AppState {
                 self.settings.worktree_auto_cleanup = !self.settings.worktree_auto_cleanup
             }
             "git-review" => self.settings.git_review_enabled = !self.settings.git_review_enabled,
+            "git-review-disabled" => {
+                self.settings.git_review_enabled = !self.settings.git_review_enabled
+            }
             "force-push" => self.settings.force_push = !self.settings.force_push,
             "draft-prs" => self.settings.draft_prs = !self.settings.draft_prs,
             "auto-merge" => self.settings.auto_merge = !self.settings.auto_merge,
+            "watch-pull-requests" => {
+                self.settings.watch_and_fix_pull_requests =
+                    !self.settings.watch_and_fix_pull_requests
+            }
             "voice" => self.settings.voice_enabled = !self.settings.voice_enabled,
             "analytics" => self.settings.analytics_enabled = !self.settings.analytics_enabled,
             "debug-logging" => self.settings.debug_logging = !self.settings.debug_logging,
@@ -3849,6 +4011,8 @@ impl AppState {
         if key.key == "escape" {
             if self.rename_open {
                 self.cancel_rename(cx);
+            } else if self.settings_editor.is_some() {
+                self.cancel_instruction_edit(window, cx);
             } else if self.menu_open {
                 self.menu_open = false;
                 cx.notify();
@@ -3991,6 +4155,48 @@ impl AppState {
         } else {
             cx.notify();
         }
+    }
+
+    pub fn handle_instruction_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = &event.keystroke;
+        if key.key == "escape" {
+            self.cancel_instruction_edit(window, cx);
+            return;
+        }
+        if key.key == "enter"
+            && !key.modifiers.shift
+            && (key.modifiers.platform || key.modifiers.control)
+        {
+            self.commit_instruction_edit(window, cx);
+            return;
+        }
+        if handle_editor_shortcut(
+            &mut self.settings_draft,
+            &mut self.settings_caret,
+            &mut self.settings_selection_anchor,
+            key,
+            cx,
+        ) {
+            return;
+        }
+        if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
+            return;
+        }
+        let _ = apply_input_edit_with_selection(
+            &mut self.settings_draft,
+            &mut self.settings_caret,
+            &mut self.settings_selection_anchor,
+            &key.key,
+            key.key_char.as_deref(),
+            key.modifiers.shift,
+            false,
+        );
+        cx.notify();
     }
 
     fn ensure_selection(&mut self) {
