@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..");
-const result = spawnSync(process.execPath, ["scripts/run-cargo.mjs", "test", "--locked", "snapshot_round_trip_uses_atomic_file", "--", "--nocapture"], {
+const result = spawnSync(process.execPath, ["scripts/run-cargo.mjs", "test", "--locked", "persistence::tests", "--", "--nocapture"], {
   cwd: repositoryRoot,
   stdio: "inherit",
 });

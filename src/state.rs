@@ -55,6 +55,7 @@ pub struct ServerCatalog {
     pub apps: Vec<String>,
     pub installed_apps: Vec<String>,
     pub plugins: Vec<String>,
+    pub available_plugins: Vec<String>,
     pub skills: Vec<String>,
     pub mcp_servers: Vec<String>,
     pub account_label: Option<String>,
@@ -105,14 +106,32 @@ impl ServerCatalog {
             catalog.installed_apps = named_values_from_data(&value, &["name", "displayName", "id"]);
         }
         if let Ok(value) = client.plugin_list() {
-            catalog.plugins = named_values_from_data(&value, &["name", "displayName", "id"]);
-            if catalog.plugins.is_empty() {
-                catalog.plugins = nested_named_values_from_data(
+            catalog.available_plugins =
+                named_values_from_data(&value, &["name", "displayName", "id"]);
+            if catalog.available_plugins.is_empty() {
+                catalog.available_plugins = nested_named_values_from_data(
                     &value,
                     &["marketplaces", "plugins", "data"],
                     &["name", "displayName", "id"],
                 );
             }
+        }
+        if let Ok(value) = client.plugin_installed(
+            Some(
+                &cwd.filter(|cwd| !cwd.is_empty())
+                    .map(|cwd| vec![cwd.to_owned()])
+                    .unwrap_or_default(),
+            ),
+            None,
+        ) {
+            catalog.plugins = nested_named_values_from_data(
+                &value,
+                &["plugins", "installed", "data"],
+                &["name", "displayName", "id"],
+            );
+        }
+        if catalog.plugins.is_empty() {
+            catalog.plugins = catalog.available_plugins.clone();
         }
         if let Ok(value) = client.skills_list(
             &cwd.filter(|cwd| !cwd.is_empty())
@@ -2375,6 +2394,97 @@ impl AppState {
                         this.notify_success("Plugin uninstalled", cx);
                     }
                     Err(error) => this.fail(&format!("Plugin uninstall failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn search_plugins(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.live_client.clone() else {
+            self.catalog.available_plugins = self.catalog.plugins.clone();
+            self.notify_success("Plugin catalog refreshed locally", cx);
+            return;
+        };
+        let cwds = self
+            .current_task()
+            .map(|task| vec![task.path.clone()])
+            .unwrap_or_default();
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || {
+                            client.plugin_search("", None, Some(&cwds), Some(100), None)
+                        })
+                        .await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(value) => {
+                        this.catalog.available_plugins = nested_named_values_from_data(
+                            &value,
+                            &["plugins", "results", "data"],
+                            &["name", "displayName", "id"],
+                        );
+                        this.notify_success("Plugin catalog refreshed", cx);
+                    }
+                    Err(error) => this.fail(&format!("Plugin search failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn install_plugin(&mut self, plugin_name: String, cx: &mut Context<Self>) {
+        if self.connection != ConnectionState::Live {
+            if !self
+                .catalog
+                .plugins
+                .iter()
+                .any(|plugin| plugin == &plugin_name)
+            {
+                self.catalog.plugins.push(plugin_name);
+                self.persist(cx);
+                self.notify_success("Plugin installed in the local catalog", cx);
+            }
+            return;
+        }
+        let Some(client) = self.live_client.clone() else {
+            return;
+        };
+        let install_attempt_id = format!(
+            "install-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or_default()
+        );
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || {
+                            client.plugin_install_with_attempt(
+                                &plugin_name,
+                                Some(&install_attempt_id),
+                                None,
+                                None,
+                            )
+                        })
+                        .await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(_) => {
+                        this.refresh_catalog(cx);
+                        this.notify_success("Plugin installation started", cx);
+                    }
+                    Err(error) => this.fail(&format!("Plugin install failed: {error}"), cx),
                 });
             },
         )

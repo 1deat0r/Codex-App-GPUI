@@ -1320,7 +1320,25 @@ impl AppServerClient {
         marketplace_path: Option<&str>,
         remote_marketplace_name: Option<&str>,
     ) -> Result<Value> {
+        self.plugin_install_with_attempt(
+            plugin_name,
+            None,
+            marketplace_path,
+            remote_marketplace_name,
+        )
+    }
+
+    pub fn plugin_install_with_attempt(
+        &self,
+        plugin_name: &str,
+        install_attempt_id: Option<&str>,
+        marketplace_path: Option<&str>,
+        remote_marketplace_name: Option<&str>,
+    ) -> Result<Value> {
         let mut params = json!({ "pluginName": plugin_name });
+        if let Some(install_attempt_id) = install_attempt_id.filter(|value| !value.is_empty()) {
+            params["installAttemptId"] = Value::String(install_attempt_id.into());
+        }
         if let Some(marketplace_path) = marketplace_path.filter(|value| !value.is_empty()) {
             params["marketplacePath"] = Value::String(marketplace_path.into());
         }

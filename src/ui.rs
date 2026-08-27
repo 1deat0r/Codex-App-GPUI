@@ -965,14 +965,16 @@ fn thread_header(
                 this.share_current(cx);
             }),
         ))
-        .child(icon_button(
-            "header-view",
-            "☷",
-            "View options",
-            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                this.toggle_view_options(cx);
-            }),
-        ))
+        .children(state.settings.show_bottom_panel_control.then(|| {
+            icon_button(
+                "header-view",
+                "☷",
+                "View options",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.toggle_view_options(cx);
+                }),
+            )
+        }))
         .child(icon_button(
             "header-menu",
             "…",
@@ -2212,18 +2214,20 @@ fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                             this.cycle_reasoning(cx)
                         }),
                     ))
-                    .child(icon_button(
-                        "composer-mic",
-                        if state.voice_active { "■" } else { "♩" },
-                        if state.voice_active {
-                            "Stop voice input"
-                        } else {
-                            "Voice input"
-                        },
-                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                            this.toggle_voice(cx)
-                        }),
-                    ))
+                    .children(state.settings.voice_enabled.then(|| {
+                        icon_button(
+                            "composer-mic",
+                            if state.voice_active { "■" } else { "♩" },
+                            if state.voice_active {
+                                "Stop voice input"
+                            } else {
+                                "Voice input"
+                            },
+                            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                                this.toggle_voice(cx)
+                            }),
+                        )
+                    }))
                     .children(if running {
                         Some(text_button(
                             "composer-stop",
@@ -2301,6 +2305,15 @@ fn destination_card(
     detail: String,
     action: Option<(String, Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>)>,
 ) -> Stateful<Div> {
+    destination_card_with_actions(id, title, detail, action.into_iter().collect())
+}
+
+fn destination_card_with_actions(
+    id: String,
+    title: String,
+    detail: String,
+    actions: Vec<(String, Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>)>,
+) -> Stateful<Div> {
     let card = div()
         .id(ElementId::Name(format!("destination-card-{id}").into()))
         .bg(theme::bg_surface())
@@ -2322,15 +2335,18 @@ fn destination_card(
                 .child(div().text_color(theme::text()).child(title))
                 .child(div().text_color(theme::text_muted()).child(detail)),
         );
-    if let Some((label, listener)) = action {
-        card.child(text_button(
-            ElementId::Name(format!("destination-action-{id}").into()),
-            &label,
-            listener,
-        ))
-    } else {
-        card
-    }
+    card.children(
+        actions
+            .into_iter()
+            .enumerate()
+            .map(|(index, (label, listener))| {
+                text_button(
+                    ElementId::Name(format!("destination-action-{id}-{index}").into()),
+                    &label,
+                    listener,
+                )
+            }),
+    )
 }
 
 fn empty_destination_card(
@@ -2499,33 +2515,54 @@ fn scheduled_view(
         .automations
         .iter()
         .map(|automation| {
-            let automation_id = automation.id.clone();
+            let run_id = automation.id.clone();
+            let toggle_id = automation.id.clone();
+            let delete_id = automation.id.clone();
             let automation_status = automation.status.clone();
             let action_label = if automation.status == "active" {
                 "Run now"
             } else {
                 "Resume"
             };
-            destination_card(
+            let mut actions = vec![(
+                action_label.into(),
+                Box::new(
+                    window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                        if automation_status == "active" {
+                            this.run_automation(run_id.clone(), cx);
+                        } else {
+                            this.toggle_automation(run_id.clone(), cx);
+                        }
+                    }),
+                ) as Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
+            )];
+            if automation.status == "active" {
+                actions.push((
+                    "Pause".into(),
+                    Box::new(window.listener_for(
+                        &cx.entity(),
+                        move |this, _event, _window, cx| {
+                            this.toggle_automation(toggle_id.clone(), cx);
+                        },
+                    )),
+                ));
+            }
+            actions.push((
+                "Delete".into(),
+                Box::new(
+                    window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                        this.delete_automation(delete_id.clone(), cx);
+                    }),
+                ),
+            ));
+            destination_card_with_actions(
                 format!("scheduled-{}", automation.id),
                 automation.name.clone(),
                 format!(
                     "{} · {} · next run {}",
                     automation.schedule, automation.status, automation.next_run
                 ),
-                Some((
-                    action_label.into(),
-                    Box::new(window.listener_for(
-                        &cx.entity(),
-                        move |this, _event, _window, cx| {
-                            if automation_status == "active" {
-                                this.run_automation(automation_id.clone(), cx);
-                            } else {
-                                this.toggle_automation(automation_id.clone(), cx);
-                            }
-                        },
-                    )),
-                )),
+                actions,
             )
         })
         .collect::<Vec<_>>();
@@ -2591,6 +2628,30 @@ fn plugins_view(
             )
         })
         .collect::<Vec<_>>();
+    for plugin in &state.catalog.available_plugins {
+        if state
+            .catalog
+            .plugins
+            .iter()
+            .any(|installed| installed == plugin)
+        {
+            continue;
+        }
+        let plugin_name = plugin.clone();
+        cards.push(destination_card(
+            format!("plugin-available-{plugin}"),
+            plugin.clone(),
+            "Available from the local app-server catalog".into(),
+            Some((
+                "Install".into(),
+                Box::new(
+                    window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                        this.install_plugin(plugin_name.clone(), cx);
+                    }),
+                ),
+            )),
+        ));
+    }
     if cards.is_empty() {
         cards.push(empty_destination_card(
             "plugins-empty",
@@ -3094,6 +3155,36 @@ fn settings_page_body(
                     state.catalog.plugins.join(", ")
                 },
                 None,
+            ))
+            .child(setting_row(
+                "Available plugins",
+                "Plugins discoverable from configured marketplaces",
+                if state.catalog.available_plugins.is_empty() {
+                    "None reported".into()
+                } else {
+                    state.catalog.available_plugins.join(", ")
+                },
+                None,
+            ))
+            .child(setting_row(
+                "Search catalog",
+                "Refresh available plugin metadata from the app-server",
+                "Search".into(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.search_plugins(cx);
+                    },
+                ))),
+            ))
+            .child(setting_toggle(
+                "Automatic updates",
+                "Keep installed plugins updated when the server supports it",
+                state.settings.plugin_auto_update,
+                "plugin-auto-update",
+                state,
+                window,
+                cx,
             ))
             .child(setting_row(
                 "Marketplaces",
