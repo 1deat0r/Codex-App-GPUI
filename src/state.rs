@@ -1964,6 +1964,70 @@ impl AppState {
         self.notify_success(&format!("Reduced motion: {value}"), cx);
     }
 
+    pub fn cycle_enter_behavior(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[&str] = &["send", "newline"];
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == self.settings.enter_behavior)
+            .unwrap_or(0);
+        self.settings.enter_behavior = OPTIONS[(position + 1) % OPTIONS.len()].into();
+        let value = self.settings.enter_behavior.clone();
+        self.persist(cx);
+        self.notify_success(&format!("Enter behavior: {value}"), cx);
+    }
+
+    pub fn cycle_language(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[&str] = &["system", "English", "日本語", "简体中文"];
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == self.settings.language)
+            .unwrap_or(0);
+        self.settings.language = OPTIONS[(position + 1) % OPTIONS.len()].into();
+        let value = self.settings.language.clone();
+        self.persist(cx);
+        self.notify_success(&format!("App language: {value}"), cx);
+    }
+
+    pub fn cycle_terminal_shell(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[&str] = &["system", "bash", "zsh", "fish"];
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == self.settings.terminal_shell)
+            .unwrap_or(0);
+        self.settings.terminal_shell = OPTIONS[(position + 1) % OPTIONS.len()].into();
+        let value = self.settings.terminal_shell.clone();
+        self.persist(cx);
+        self.notify_success(&format!("Terminal shell: {value}"), cx);
+    }
+
+    pub fn cycle_worktree_keep_count(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[u8] = &[3, 5, 10, 20];
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == self.settings.worktree_keep_count)
+            .unwrap_or(1);
+        self.settings.worktree_keep_count = OPTIONS[(position + 1) % OPTIONS.len()];
+        let value = self.settings.worktree_keep_count;
+        self.persist(cx);
+        self.notify_success(&format!("Worktree auto-delete limit: {value}"), cx);
+    }
+
+    pub fn cycle_branch_prefix(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[&str] = &["codex/", "feature/", "task/", ""];
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == self.settings.branch_prefix)
+            .unwrap_or(0);
+        self.settings.branch_prefix = OPTIONS[(position + 1) % OPTIONS.len()].into();
+        let value = if self.settings.branch_prefix.is_empty() {
+            "(none)"
+        } else {
+            self.settings.branch_prefix.as_str()
+        };
+        self.persist(cx);
+        self.notify_success(&format!("Branch prefix: {value}"), cx);
+    }
+
     pub fn cycle_sandbox_mode(&mut self, cx: &mut Context<Self>) {
         const OPTIONS: &[&str] = &["workspace-write", "read-only", "danger-full-access"];
         let current = self.settings.sandbox_mode.as_str();
@@ -2866,10 +2930,33 @@ impl AppState {
             "sound" => self.settings.sound_effects = !self.settings.sound_effects,
             "reduced-motion" => self.settings.reduced_motion = !self.settings.reduced_motion,
             "context-usage" => self.settings.show_context_usage = !self.settings.show_context_usage,
+            "bottom-panel-control" => {
+                self.settings.show_bottom_panel_control = !self.settings.show_bottom_panel_control
+            }
+            "full-access" => self.settings.show_full_access = !self.settings.show_full_access,
+            "educational-tips" => {
+                self.settings.show_educational_tips = !self.settings.show_educational_tips
+            }
+            "ambient-suggestions" => {
+                self.settings.ambient_suggestions = !self.settings.ambient_suggestions
+            }
+            "queue-follow-ups" => self.settings.queue_follow_ups = !self.settings.queue_follow_ups,
             "git-review" => self.settings.git_review_enabled = !self.settings.git_review_enabled,
             "force-push" => self.settings.force_push = !self.settings.force_push,
             "draft-prs" => self.settings.draft_prs = !self.settings.draft_prs,
             "auto-merge" => self.settings.auto_merge = !self.settings.auto_merge,
+            "voice" => self.settings.voice_enabled = !self.settings.voice_enabled,
+            "analytics" => self.settings.analytics_enabled = !self.settings.analytics_enabled,
+            "debug-logging" => self.settings.debug_logging = !self.settings.debug_logging,
+            "hooks" => self.settings.hooks_enabled = !self.settings.hooks_enabled,
+            "cloud" => self.settings.cloud_enabled = !self.settings.cloud_enabled,
+            "computer-use" => {
+                self.settings.computer_use_enabled = !self.settings.computer_use_enabled
+            }
+            "browser-use" => self.settings.browser_use_enabled = !self.settings.browser_use_enabled,
+            "plugin-auto-update" => {
+                self.settings.plugin_auto_update = !self.settings.plugin_auto_update
+            }
             _ => {}
         }
         self.persist(cx);
@@ -3030,6 +3117,21 @@ impl AppState {
             key.modifiers.shift,
             self.streaming,
         );
+        let action = if key.key == "enter"
+            && !key.modifiers.shift
+            && !self.streaming
+            && self.settings.enter_behavior == "newline"
+        {
+            replace_selection(
+                &mut self.draft,
+                &mut self.caret,
+                &mut self.selection_anchor,
+                "\n",
+            );
+            InputAction::None
+        } else {
+            action
+        };
         if action == InputAction::Send {
             self.send(cx);
         } else {

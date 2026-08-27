@@ -248,6 +248,50 @@ pub struct Settings {
     pub review_delivery: String,
     #[serde(default)]
     pub auto_merge: bool,
+    #[serde(default = "default_true")]
+    pub show_bottom_panel_control: bool,
+    #[serde(default = "default_true")]
+    pub show_full_access: bool,
+    #[serde(default = "default_true")]
+    pub show_educational_tips: bool,
+    #[serde(default = "default_true")]
+    pub ambient_suggestions: bool,
+    #[serde(default = "default_true")]
+    pub queue_follow_ups: bool,
+    #[serde(default = "default_enter_behavior")]
+    pub enter_behavior: String,
+    #[serde(default)]
+    pub projectless_task_folder: String,
+    #[serde(default = "default_language")]
+    pub language: String,
+    #[serde(default = "default_terminal_shell")]
+    pub terminal_shell: String,
+    #[serde(default)]
+    pub worktree_auto_fetch: bool,
+    #[serde(default)]
+    pub worktree_auto_cleanup: bool,
+    #[serde(default = "default_worktree_keep_count")]
+    pub worktree_keep_count: u8,
+    #[serde(default)]
+    pub commit_instructions: String,
+    #[serde(default)]
+    pub pull_request_instructions: String,
+    #[serde(default = "default_true")]
+    pub voice_enabled: bool,
+    #[serde(default = "default_true")]
+    pub analytics_enabled: bool,
+    #[serde(default)]
+    pub debug_logging: bool,
+    #[serde(default = "default_true")]
+    pub hooks_enabled: bool,
+    #[serde(default = "default_true")]
+    pub cloud_enabled: bool,
+    #[serde(default)]
+    pub computer_use_enabled: bool,
+    #[serde(default = "default_true")]
+    pub browser_use_enabled: bool,
+    #[serde(default = "default_true")]
+    pub plugin_auto_update: bool,
 }
 
 fn default_theme() -> String {
@@ -283,6 +327,18 @@ fn default_merge_method() -> String {
 fn default_review_delivery() -> String {
     "inline".into()
 }
+fn default_enter_behavior() -> String {
+    "send".into()
+}
+fn default_language() -> String {
+    "system".into()
+}
+fn default_terminal_shell() -> String {
+    "system".into()
+}
+fn default_worktree_keep_count() -> u8 {
+    5
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -306,6 +362,28 @@ impl Default for Settings {
             merge_method: default_merge_method(),
             review_delivery: default_review_delivery(),
             auto_merge: false,
+            show_bottom_panel_control: true,
+            show_full_access: true,
+            show_educational_tips: true,
+            ambient_suggestions: true,
+            queue_follow_ups: true,
+            enter_behavior: default_enter_behavior(),
+            projectless_task_folder: String::new(),
+            language: default_language(),
+            terminal_shell: default_terminal_shell(),
+            worktree_auto_fetch: false,
+            worktree_auto_cleanup: false,
+            worktree_keep_count: default_worktree_keep_count(),
+            commit_instructions: String::new(),
+            pull_request_instructions: String::new(),
+            voice_enabled: true,
+            analytics_enabled: true,
+            debug_logging: false,
+            hooks_enabled: true,
+            cloud_enabled: true,
+            computer_use_enabled: false,
+            browser_use_enabled: true,
+            plugin_auto_update: true,
         }
     }
 }
@@ -513,62 +591,180 @@ pub enum Route {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsPage {
     General,
+    Import,
+    Profile,
     Account,
     Appearance,
+    Voice,
+    Agent,
+    Personalization,
+    Pets,
     Notifications,
-    Apps,
-    Mcp,
-    Skills,
-    Plugins,
+    Usage,
+    Analytics,
+    Debug,
     Keybindings,
+    Teams,
+    Apps,
+    ComputerUse,
+    Chronicle,
+    Appshots,
+    CodexMicro,
+    Mcp,
+    Plugins,
+    Skills,
+    BrowserUse,
+    Hooks,
+    Connections,
+    Cloud,
+    CloudEnvironments,
+    CodeReview,
     Worktrees,
     Git,
+    LocalEnvironments,
+    Environments,
+    DataControls,
 }
 
 impl SettingsPage {
     pub const ALL: &[Self] = &[
         Self::General,
+        Self::Import,
+        Self::Profile,
         Self::Account,
         Self::Appearance,
+        Self::Voice,
+        Self::Agent,
+        Self::Personalization,
+        Self::Pets,
         Self::Notifications,
-        Self::Apps,
-        Self::Mcp,
-        Self::Skills,
-        Self::Plugins,
+        Self::Usage,
+        Self::Analytics,
+        Self::Debug,
         Self::Keybindings,
-        Self::Worktrees,
+        Self::Teams,
+        Self::Apps,
+        Self::ComputerUse,
+        Self::Chronicle,
+        Self::Appshots,
+        Self::CodexMicro,
+        Self::Mcp,
+        Self::Plugins,
+        Self::Skills,
+        Self::BrowserUse,
+        Self::Hooks,
+        Self::Connections,
+        Self::Cloud,
+        Self::CloudEnvironments,
+        Self::CodeReview,
         Self::Git,
+        Self::LocalEnvironments,
+        Self::Environments,
+        Self::Worktrees,
+        Self::DataControls,
     ];
+
+    pub fn group(self) -> &'static str {
+        match self {
+            Self::Teams => "Teams",
+            Self::Apps
+            | Self::ComputerUse
+            | Self::Chronicle
+            | Self::Appshots
+            | Self::CodexMicro
+            | Self::Mcp
+            | Self::Plugins
+            | Self::Skills
+            | Self::BrowserUse => "Integrations",
+            Self::Hooks
+            | Self::Connections
+            | Self::Cloud
+            | Self::CloudEnvironments
+            | Self::CodeReview
+            | Self::Git
+            | Self::LocalEnvironments
+            | Self::Environments
+            | Self::Worktrees => "Coding",
+            Self::DataControls => "Archived",
+            _ => "Personal",
+        }
+    }
 
     pub fn title(self) -> &'static str {
         match self {
             Self::General => "General",
+            Self::Import => "Import",
+            Self::Profile => "Profile",
             Self::Account => "Account",
             Self::Appearance => "Appearance",
+            Self::Voice => "Voice",
+            Self::Agent => "Agent",
+            Self::Personalization => "Personalization",
+            Self::Pets => "Pets",
             Self::Notifications => "Notifications",
+            Self::Usage => "Usage",
+            Self::Analytics => "Analytics",
+            Self::Debug => "Debug",
+            Self::Keybindings => "Keyboard shortcuts",
+            Self::Teams => "Teams",
             Self::Apps => "Apps & Connectors",
+            Self::ComputerUse => "Computer use",
+            Self::Chronicle => "Chronicle",
+            Self::Appshots => "Appshots",
+            Self::CodexMicro => "Codex Micro",
             Self::Mcp => "MCP",
-            Self::Skills => "Skills",
             Self::Plugins => "Plugins",
-            Self::Keybindings => "Keybindings",
+            Self::Skills => "Skills",
+            Self::BrowserUse => "Browser use",
+            Self::Hooks => "Hooks",
+            Self::Connections => "Connections",
+            Self::Cloud => "Cloud",
+            Self::CloudEnvironments => "Cloud environments",
+            Self::CodeReview => "Code review",
             Self::Worktrees => "Worktrees",
             Self::Git => "Git",
+            Self::LocalEnvironments => "Local environments",
+            Self::Environments => "Environments",
+            Self::DataControls => "Data controls",
         }
     }
 
     pub fn icon(self) -> &'static str {
         match self {
             Self::General => "⚙",
+            Self::Import => "⇩",
+            Self::Profile => "◎",
             Self::Account => "◎",
             Self::Appearance => "◐",
+            Self::Voice => "◉",
+            Self::Agent => "✦",
+            Self::Personalization => "☼",
+            Self::Pets => "♣",
             Self::Notifications => "◌",
-            Self::Apps => "⊞",
-            Self::Mcp => "⌘",
-            Self::Skills => "✦",
-            Self::Plugins => "▦",
+            Self::Usage => "◒",
+            Self::Analytics => "▥",
+            Self::Debug => "⌁",
             Self::Keybindings => "⌨",
+            Self::Teams => "♙",
+            Self::Apps => "⊞",
+            Self::ComputerUse => "▣",
+            Self::Chronicle => "◷",
+            Self::Appshots => "▧",
+            Self::CodexMicro => "·",
+            Self::Mcp => "⌘",
+            Self::Plugins => "▦",
+            Self::Skills => "✦",
+            Self::BrowserUse => "◌",
+            Self::Hooks => "⌇",
+            Self::Connections => "⇄",
+            Self::Cloud => "☁",
+            Self::CloudEnvironments => "◇",
+            Self::CodeReview => "◫",
             Self::Worktrees => "⑂",
             Self::Git => "●",
+            Self::LocalEnvironments => "⌂",
+            Self::Environments => "□",
+            Self::DataControls => "▤",
         }
     }
 }

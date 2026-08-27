@@ -2618,6 +2618,35 @@ fn settings_view(
     window: &mut Window,
     cx: &mut Context<AppState>,
 ) -> Stateful<Div> {
+    let mut navigation = Vec::new();
+    let mut previous_group = None;
+    for page in SettingsPage::ALL {
+        let page = *page;
+        if previous_group != Some(page.group()) {
+            navigation.push(
+                div()
+                    .id(ElementId::Name(
+                        format!("settings-group-{}", page.group().to_lowercase()).into(),
+                    ))
+                    .mt_3()
+                    .mb_1()
+                    .px_2()
+                    .text_size(rems(0.64))
+                    .text_color(theme::text_faint())
+                    .child(page.group()),
+            );
+            previous_group = Some(page.group());
+        }
+        navigation.push(nav_item(
+            ElementId::Name(format!("settings-{:?}", page).into()),
+            page.icon(),
+            page.title(),
+            state.settings_page == page,
+            window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                this.select_settings_page(page, cx)
+            }),
+        ));
+    }
     div()
         .id("settings-view")
         .flex_1()
@@ -2634,18 +2663,7 @@ fn settings_view(
                 .flex()
                 .flex_col()
                 .gap_1()
-                .children(SettingsPage::ALL.iter().map(|page| {
-                    let page = *page;
-                    nav_item(
-                        ElementId::Name(format!("settings-{:?}", page).into()),
-                        page.icon(),
-                        page.title(),
-                        state.settings_page == page,
-                        window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
-                            this.select_settings_page(page, cx)
-                        }),
-                    )
-                })),
+                .children(navigation),
         )
         .child(settings_panel(state, window, cx))
 }
@@ -2693,16 +2711,39 @@ fn settings_panel(
 fn settings_description(page: SettingsPage) -> &'static str {
     match page {
         SettingsPage::General => "Control how Codex starts tasks and stores local UI state.",
+        SettingsPage::Import => "Bring conversations and settings from other coding agents.",
+        SettingsPage::Profile => "Profile, display name, and account-facing preferences.",
         SettingsPage::Account => "Account and authentication status for this desktop client.",
         SettingsPage::Appearance => "Theme, density, and motion preferences.",
+        SettingsPage::Voice => "Voice input, realtime conversations, and audio preferences.",
+        SettingsPage::Agent => "Default agent behavior, model routing, and autonomy controls.",
+        SettingsPage::Personalization => "Custom instructions and response personalization.",
+        SettingsPage::Pets => "Optional companion and ambient interaction settings.",
         SettingsPage::Notifications => "Choose which task and turn events can interrupt you.",
-        SettingsPage::Apps => "Connected apps and browser-facing capabilities.",
-        SettingsPage::Mcp => "Model Context Protocol servers available to Codex.",
-        SettingsPage::Skills => "Reusable skills and instruction sources.",
-        SettingsPage::Plugins => "Installed plugins, permissions, and marketplaces.",
+        SettingsPage::Usage => "Token, rate-limit, and account usage information.",
+        SettingsPage::Analytics => "Telemetry and product-improvement preferences.",
+        SettingsPage::Debug => "Diagnostics and developer-facing troubleshooting controls.",
         SettingsPage::Keybindings => "Keyboard shortcuts for navigation and task control.",
-        SettingsPage::Worktrees => "Git worktree defaults and environment selection.",
+        SettingsPage::Teams => "Team and workspace membership settings.",
+        SettingsPage::Apps => "Connected apps and browser-facing capabilities.",
+        SettingsPage::ComputerUse => "Computer-use tools and their approval boundary.",
+        SettingsPage::Chronicle => "Chronicle connection and activity history.",
+        SettingsPage::Appshots => "Appshots capture and sharing preferences.",
+        SettingsPage::CodexMicro => "Codex Micro device and local companion settings.",
+        SettingsPage::Mcp => "Model Context Protocol servers available to Codex.",
+        SettingsPage::Plugins => "Installed plugins, permissions, and marketplaces.",
+        SettingsPage::Skills => "Reusable skills and instruction sources.",
+        SettingsPage::BrowserUse => "Browser-use tools and their approval boundary.",
+        SettingsPage::Hooks => "Hooks that run at task and turn lifecycle boundaries.",
+        SettingsPage::Connections => "Remote coding connections and paired devices.",
+        SettingsPage::Cloud => "Cloud task execution and synchronization.",
+        SettingsPage::CloudEnvironments => "Cloud execution environments and defaults.",
+        SettingsPage::CodeReview => "Code review behavior and delivery preferences.",
         SettingsPage::Git => "Git identity, attribution, and repository behavior.",
+        SettingsPage::LocalEnvironments => "Local execution environments available to Codex.",
+        SettingsPage::Environments => "Environment selection and setup behavior.",
+        SettingsPage::Worktrees => "Git worktree defaults and environment selection.",
+        SettingsPage::DataControls => "Data retention, export, and deletion controls.",
     }
 }
 
@@ -2756,6 +2797,71 @@ fn settings_page_body(
                         this.cycle_sandbox_mode(cx)
                     }),
                 )),
+            ))
+            .child(setting_row(
+                "Enter behavior",
+                "Choose whether Enter sends or inserts a new line",
+                state.settings.enter_behavior.clone(),
+                Some(Box::new(
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.cycle_enter_behavior(cx)
+                    }),
+                )),
+            ))
+            .child(setting_row(
+                "Language",
+                "Language for the app UI",
+                state.settings.language.clone(),
+                Some(Box::new(
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.cycle_language(cx)
+                    }),
+                )),
+            ))
+            .child(setting_toggle(
+                "Show bottom panel control",
+                "Show the bottom panel control in the app header",
+                state.settings.show_bottom_panel_control,
+                "bottom-panel-control",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_toggle(
+                "Show Full access",
+                "Show Full access in the composer",
+                state.settings.show_full_access,
+                "full-access",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_toggle(
+                "Educational tips",
+                "Show educational tips while using Codex",
+                state.settings.show_educational_tips,
+                "educational-tips",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_toggle(
+                "Ambient suggestions",
+                "Enable ambient suggestions in the task list",
+                state.settings.ambient_suggestions,
+                "ambient-suggestions",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_toggle(
+                "Queue follow-ups",
+                "Queue follow-ups while a turn is running",
+                state.settings.queue_follow_ups,
+                "queue-follow-ups",
+                state,
+                window,
+                cx,
             ))
             .child(setting_row(
                 "State file",
@@ -3158,7 +3264,12 @@ fn settings_page_body(
                 "Branch prefix",
                 "Prefix used for Codex-created branches",
                 state.settings.branch_prefix.clone(),
-                None,
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.cycle_branch_prefix(cx);
+                    },
+                ))),
             ))
             .child(setting_row(
                 "Merge method",
@@ -3191,7 +3302,511 @@ fn settings_page_body(
                 window,
                 cx,
             )),
+        SettingsPage::Import
+        | SettingsPage::Profile
+        | SettingsPage::Voice
+        | SettingsPage::Agent
+        | SettingsPage::Personalization
+        | SettingsPage::Pets
+        | SettingsPage::Usage
+        | SettingsPage::Analytics
+        | SettingsPage::Debug
+        | SettingsPage::Teams
+        | SettingsPage::ComputerUse
+        | SettingsPage::Chronicle
+        | SettingsPage::Appshots
+        | SettingsPage::CodexMicro
+        | SettingsPage::BrowserUse
+        | SettingsPage::Hooks
+        | SettingsPage::Connections
+        | SettingsPage::Cloud
+        | SettingsPage::CloudEnvironments
+        | SettingsPage::CodeReview
+        | SettingsPage::LocalEnvironments
+        | SettingsPage::Environments
+        | SettingsPage::DataControls => extended_settings_page(page, state, window, cx),
     }
+}
+
+fn extended_settings_page(
+    page: SettingsPage,
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Div {
+    match page {
+        SettingsPage::Import => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_row(
+                "Import source",
+                "Import remains local to this client and never copies credentials",
+                "Choose a folder or archive".into(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.pick_project(cx);
+                    },
+                ))),
+            ))
+            .child(setting_row(
+                "Current state",
+                "Selected projects and tasks are retained across launches",
+                format!("{} project(s)", state.workspace.projects.len()),
+                None,
+            )),
+        SettingsPage::Profile => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_row(
+                "Display name",
+                "Name shown by the local client",
+                state
+                    .catalog
+                    .account_label
+                    .clone()
+                    .unwrap_or_else(|| "Local account".into()),
+                None,
+            ))
+            .child(setting_row(
+                "Language",
+                "Language for the app UI",
+                state.settings.language.clone(),
+                Some(Box::new(
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.cycle_language(cx)
+                    }),
+                )),
+            )),
+        SettingsPage::Voice => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_toggle(
+                "Voice input",
+                "Enable the realtime voice control in the composer",
+                state.settings.voice_enabled,
+                "voice",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_row(
+                "Realtime session",
+                "Current local app-server voice session",
+                if state.voice_active {
+                    "Active".into()
+                } else {
+                    "Inactive".into()
+                },
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.toggle_voice(cx);
+                    },
+                ))),
+            )),
+        SettingsPage::Agent => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_row(
+                "Default model",
+                "Model used for new agent tasks",
+                state.settings.default_model.clone(),
+                Some(Box::new(
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.cycle_model(cx)
+                    }),
+                )),
+            ))
+            .child(setting_row(
+                "Reasoning effort",
+                "Default agent reasoning budget",
+                state.settings.default_reasoning.clone(),
+                Some(Box::new(
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.cycle_reasoning(cx)
+                    }),
+                )),
+            ))
+            .child(setting_toggle(
+                "Full access control",
+                "Expose the Full access choice in the composer",
+                state.settings.show_full_access,
+                "full-access",
+                state,
+                window,
+                cx,
+            )),
+        SettingsPage::Personalization => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_row(
+                "Custom instructions",
+                "Instructions are delegated to Codex configuration",
+                "Configured in app-server".into(),
+                None,
+            ))
+            .child(setting_row(
+                "Projectless task folder",
+                "Folder used when a task is not attached to a project",
+                if state.settings.projectless_task_folder.is_empty() {
+                    "Default".into()
+                } else {
+                    state.settings.projectless_task_folder.clone()
+                },
+                None,
+            )),
+        SettingsPage::Pets => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_toggle(
+                "Educational tips",
+                "Show occasional guidance while working",
+                state.settings.show_educational_tips,
+                "educational-tips",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_toggle(
+                "Ambient suggestions",
+                "Show optional suggestions in idle surfaces",
+                state.settings.ambient_suggestions,
+                "ambient-suggestions",
+                state,
+                window,
+                cx,
+            )),
+        SettingsPage::Usage => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_row(
+                "Current task usage",
+                "Input, output, cached, and context tokens",
+                state
+                    .current_task()
+                    .map(|task| {
+                        format!(
+                            "{} in · {} out · {} cached",
+                            format_tokens(task.usage.input),
+                            format_tokens(task.usage.output),
+                            format_tokens(task.usage.cached)
+                        )
+                    })
+                    .unwrap_or_else(|| "No task selected".into()),
+                None,
+            ))
+            .child(setting_row(
+                "Account usage",
+                "Read-only usage metadata from the app-server",
+                if state.connection == crate::state::ConnectionState::Live {
+                    "Available"
+                } else {
+                    "Connect to Codex"
+                }
+                .into(),
+                None,
+            )),
+        SettingsPage::Analytics => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_toggle(
+                "Product analytics",
+                "Allow anonymous product-improvement events",
+                state.settings.analytics_enabled,
+                "analytics",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_row(
+                "Data boundary",
+                "Transcript and credentials stay in their defined local boundaries",
+                "Protected".into(),
+                None,
+            )),
+        SettingsPage::Debug => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_toggle(
+                "Debug logging",
+                "Record additional local diagnostic information",
+                state.settings.debug_logging,
+                "debug-logging",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_row(
+                "Connection",
+                "App-server transport status",
+                state.connection.label().into(),
+                None,
+            )),
+        SettingsPage::Teams => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_row(
+                "Workspace",
+                "Team workspace information from the current account",
+                state
+                    .catalog
+                    .account_label
+                    .clone()
+                    .unwrap_or_else(|| "Local workspace".into()),
+                None,
+            ))
+            .child(setting_row(
+                "Membership",
+                "Team controls are provided by the authenticated app-server",
+                if state.connection == crate::state::ConnectionState::Live {
+                    "Connected"
+                } else {
+                    "Local only"
+                }
+                .into(),
+                None,
+            )),
+        SettingsPage::ComputerUse => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_toggle(
+                "Computer use",
+                "Expose computer-use capabilities when the server supports them",
+                state.settings.computer_use_enabled,
+                "computer-use",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_row(
+                "Approval boundary",
+                "Computer actions remain subject to server requests",
+                "Explicit approval".into(),
+                None,
+            )),
+        SettingsPage::Chronicle => capability_page(
+            "Chronicle connection",
+            "Chronicle is an optional server-provided integration.",
+            state.connection == crate::state::ConnectionState::Live,
+        ),
+        SettingsPage::Appshots => capability_page(
+            "Appshots capture",
+            "Appshots is an optional server-provided capture surface.",
+            state.connection == crate::state::ConnectionState::Live,
+        ),
+        SettingsPage::CodexMicro => capability_page(
+            "Codex Micro",
+            "Codex Micro is an optional connected device surface.",
+            state.connection == crate::state::ConnectionState::Live,
+        ),
+        SettingsPage::BrowserUse => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_toggle(
+                "Browser use",
+                "Expose browser-use capabilities when the server supports them",
+                state.settings.browser_use_enabled,
+                "browser-use",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_row(
+                "Approval boundary",
+                "Browser actions remain subject to server requests",
+                "Explicit approval".into(),
+                None,
+            )),
+        SettingsPage::Hooks => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_toggle(
+                "Hooks",
+                "Enable lifecycle hooks exposed by the app-server",
+                state.settings.hooks_enabled,
+                "hooks",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_row(
+                "Hook status",
+                "Configured hook definitions are read from the current environment",
+                if state.connection == crate::state::ConnectionState::Live {
+                    "Server-backed"
+                } else {
+                    "Local fixture"
+                }
+                .into(),
+                None,
+            )),
+        SettingsPage::Connections => capability_page(
+            "Connections",
+            "Paired devices and remote coding connections are server-owned.",
+            state.connection == crate::state::ConnectionState::Live,
+        ),
+        SettingsPage::Cloud => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_toggle(
+                "Cloud tasks",
+                "Allow cloud task surfaces when supported by the account",
+                state.settings.cloud_enabled,
+                "cloud",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_row(
+                "Execution",
+                "Cloud execution remains outside the local persistence boundary",
+                if state.connection == crate::state::ConnectionState::Live {
+                    "Server-backed"
+                } else {
+                    "Not connected"
+                }
+                .into(),
+                None,
+            )),
+        SettingsPage::CloudEnvironments => capability_page(
+            "Cloud environments",
+            "Cloud environment inventory is supplied by the app-server.",
+            state.connection == crate::state::ConnectionState::Live,
+        ),
+        SettingsPage::CodeReview => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_toggle(
+                "Git-based review",
+                "Enable review actions for the current repository",
+                state.settings.git_review_enabled,
+                "git-review",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_row(
+                "Review delivery",
+                "Deliver review results inline or in a detached view",
+                state.settings.review_delivery.clone(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.cycle_review_delivery(cx);
+                    },
+                ))),
+            )),
+        SettingsPage::LocalEnvironments => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_row(
+                "Current environment",
+                "Working directory used by the selected task",
+                state
+                    .current_task()
+                    .map(|task| task.path.clone())
+                    .unwrap_or_default(),
+                None,
+            ))
+            .child(setting_row(
+                "Worktree root",
+                "Optional root for isolated branches",
+                if state.settings.worktree_root.is_empty() {
+                    "Not configured".into()
+                } else {
+                    state.settings.worktree_root.clone()
+                },
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.pick_worktree_root(cx);
+                    },
+                ))),
+            )),
+        SettingsPage::Environments => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_row(
+                "Terminal shell",
+                "Shell used by terminal and command surfaces",
+                state.settings.terminal_shell.clone(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.cycle_terminal_shell(cx);
+                    },
+                ))),
+            ))
+            .child(setting_row(
+                "Sandbox",
+                "Execution policy for environment tasks",
+                state.settings.sandbox_mode.clone(),
+                Some(Box::new(
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.cycle_sandbox_mode(cx)
+                    }),
+                )),
+            )),
+        SettingsPage::DataControls => div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(setting_row(
+                "State location",
+                "Local snapshot and share artifact directory",
+                crate::persistence::state_path().display().to_string(),
+                None,
+            ))
+            .child(setting_row(
+                "Credential boundary",
+                "Tokens, cookies, and process handles are never persisted",
+                "Protected".into(),
+                None,
+            )),
+        _ => div(),
+    }
+}
+
+fn capability_page(title: &'static str, description: &'static str, connected: bool) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(setting_row(
+            title,
+            description,
+            if connected {
+                "Available"
+            } else {
+                "Not connected"
+            }
+            .into(),
+            None,
+        ))
+        .child(setting_row(
+            "Data boundary",
+            "The integration is controlled by the Codex app-server",
+            "Server-owned".into(),
+            None,
+        ))
 }
 
 fn setting_row(
