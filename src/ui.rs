@@ -1134,7 +1134,7 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
                 "menu-fork-worktree",
                 "Fork from this message in a new worktree",
                 window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                    this.fork_current(cx);
+                    this.fork_current_in_new_worktree(cx);
                 }),
             ),
             menu_action(

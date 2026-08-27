@@ -3305,6 +3305,115 @@ impl AppState {
         .detach();
     }
 
+    pub fn fork_current_in_new_worktree(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project().cloned() else {
+            return;
+        };
+        let Some(source) = self.current_task().cloned() else {
+            return;
+        };
+        let repository = project.path;
+        let root = if self.settings.worktree_root.is_empty() {
+            PathBuf::from(&repository).join(".codex-worktrees")
+        } else {
+            PathBuf::from(&self.settings.worktree_root)
+        };
+        let suffix = format!(
+            "fork-{}-{}",
+            self.workspace.all_tasks().count() + 1,
+            std::process::id()
+        );
+        let branch = format!("{}{}", self.settings.branch_prefix, suffix);
+        let live_client = self
+            .live_client
+            .clone()
+            .filter(|_| self.connection == ConnectionState::Live);
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || {
+                            let path = create_git_worktree(&repository, &root, &branch)?;
+                            let thread = if let Some(client) = live_client {
+                                let value = client.thread_start(path.to_str());
+                                match value {
+                                    Ok(value) => value
+                                        .get("thread")
+                                        .and_then(ServerThread::from_value)
+                                        .map(Ok)
+                                        .unwrap_or_else(|| {
+                                            Err(anyhow::anyhow!(
+                                                "app-server did not return a thread for the worktree"
+                                            ))
+                                        })?,
+                                    Err(error) => return Err(error),
+                                }
+                            } else {
+                                return Ok((path, branch, None));
+                            };
+                            Ok((path, branch, Some(thread)))
+                        })
+                        .await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok((path, _branch, Some(mut thread))) => {
+                        if thread.cwd.is_empty() {
+                            thread.cwd = path.to_string_lossy().into_owned();
+                        }
+                        let id = thread.id.clone();
+                        this.add_server_thread(thread);
+                        this.select_task("live-codex".into(), id, cx);
+                        this.refresh_worktrees(cx);
+                        this.notify_success("Forked chat in a new worktree", cx);
+                    }
+                    Ok((path, branch, None)) => {
+                        this.add_local_fork_project(path, &branch, &source, cx);
+                        this.refresh_worktrees(cx);
+                    }
+                    Err(error) => this.fail(&format!("New worktree fork failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    fn add_local_fork_project(
+        &mut self,
+        path: PathBuf,
+        branch: &str,
+        source: &Task,
+        cx: &mut Context<Self>,
+    ) {
+        let path_text = path.to_string_lossy().into_owned();
+        let project_id = unique_project_id(&path_text, &self.workspace);
+        let task_id = format!("{project_id}-task-1");
+        let mut task = source.clone();
+        task.id = task_id.clone();
+        task.project_id = project_id.clone();
+        task.path = path_text.clone();
+        task.branch = Some(branch.to_owned());
+        task.title = format!("Fork of {}", source.title);
+        task.status = "idle".into();
+        task.updated_at = "Now".into();
+        task.pinned = false;
+        self.workspace.projects.push(Project {
+            id: project_id.clone(),
+            name: Path::new(&path_text)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("Worktree")
+                .to_owned(),
+            path: path_text,
+            tasks: vec![task],
+            collapsed: false,
+        });
+        self.select_task(project_id, task_id, cx);
+        self.notify_success("Forked chat in a new worktree", cx);
+    }
+
     fn request_thread_action(
         &self,
         thread_id: String,
@@ -4511,6 +4620,49 @@ fn git_worktrees(path: &str) -> anyhow::Result<Vec<WorktreeSummary>> {
     Ok(parse_git_worktrees(&String::from_utf8_lossy(
         &output.stdout,
     )))
+}
+
+fn create_git_worktree(repository: &str, root: &Path, branch: &str) -> anyhow::Result<PathBuf> {
+    std::fs::create_dir_all(root)
+        .map_err(|error| anyhow::anyhow!("create worktree root {}: {error}", root.display()))?;
+    let component = branch
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let component = if component.is_empty() {
+        "codex-worktree".into()
+    } else {
+        component
+    };
+    let path = root.join(component);
+    if path.exists() {
+        return Err(anyhow::anyhow!(
+            "worktree destination already exists: {}",
+            path.display()
+        ));
+    }
+    let path_text = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("worktree destination is not valid UTF-8"))?;
+    let output = Command::new("git")
+        .args(["worktree", "add", "-b", branch, path_text])
+        .current_dir(repository)
+        .output()
+        .map_err(|error| anyhow::anyhow!("start git worktree add: {error}"))?;
+    if !output.status.success() {
+        return Err(anyhow::anyhow!(
+            "git worktree add exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(path)
 }
 
 fn remove_git_worktree(repository: &str, path: &str) -> anyhow::Result<()> {
@@ -5841,5 +5993,64 @@ mod tests {
         assert_eq!(worktrees[1].branch, "feature/one");
         assert!(!worktrees[1].is_main);
         assert_eq!(worktrees[2].branch, "(detached)");
+    }
+
+    #[test]
+    fn git_worktree_create_list_and_remove_round_trip_in_temp_repository() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-app-gpui-worktree-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repository = root.join("repository");
+        let worktree_root = root.join("worktrees");
+        std::fs::create_dir_all(&repository).unwrap();
+        let run_git = |arguments: &[&str], cwd: &Path| {
+            let output = Command::new("git")
+                .args(arguments)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                arguments,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run_git(&["init", "-q"], &repository);
+        std::fs::write(repository.join("fixture.txt"), "fixture\n").unwrap();
+        run_git(&["add", "fixture.txt"], &repository);
+        run_git(
+            &[
+                "-c",
+                "user.name=Codex Fixture",
+                "-c",
+                "user.email=codex-fixture@example.invalid",
+                "commit",
+                "-m",
+                "fixture",
+                "-q",
+            ],
+            &repository,
+        );
+
+        let created =
+            create_git_worktree(repository.to_str().unwrap(), &worktree_root, "codex/fork")
+                .unwrap();
+        let listed = git_worktrees(repository.to_str().unwrap()).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|worktree| {
+            worktree.path == created.to_string_lossy() && worktree.branch == "codex/fork"
+        }));
+        remove_git_worktree(repository.to_str().unwrap(), created.to_str().unwrap()).unwrap();
+        assert_eq!(
+            git_worktrees(repository.to_str().unwrap()).unwrap().len(),
+            1
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
