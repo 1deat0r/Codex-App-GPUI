@@ -20,8 +20,11 @@ impl Render for AppState {
 
 fn main() {
     if std::env::args().any(|argument| argument == "--smoke") {
-        println!("Codex App GPUI smoke: native shell, sidebar, task thread, composer, settings, protocol, persistence");
-        println!("Codex App GPUI smoke: models=4 reasoning=4 destinations=5 settings=11");
+        println!("Codex App GPUI smoke: native shell, sidebar, task thread, composer, queue, settings, protocol, persistence");
+        println!(
+            "Codex App GPUI smoke: models=4 reasoning=4 destinations=5 settings_pages={} official_client_requests=150",
+            model::SettingsPage::ALL.len()
+        );
         println!("PARITY_G6_SMOKE_OK");
         return;
     }
