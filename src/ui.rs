@@ -9,6 +9,7 @@ use gpui::*;
 use crate::model::{Entry, Route, SettingsPage, Task};
 use crate::state::{
     child_status_counts, format_tokens, plan_progress, AppMenu, AppState, InteractionKind,
+    CONTENT_LAYOUTS,
 };
 use crate::theme;
 
@@ -20,6 +21,7 @@ pub fn root(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
         .flex()
         .flex_col()
         .bg(theme::bg_base())
+        .text_size(rems(state.settings.font_size as f32 / 16.0))
         .text_color(theme::text())
         .relative()
         .track_focus(&state.root_focus)
@@ -989,7 +991,7 @@ fn view_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) 
         .absolute()
         .top(px(42.0))
         .right(px(48.0))
-        .w(px(210.0))
+        .w(px(240.0))
         .flex()
         .flex_col()
         .gap_1()
@@ -999,48 +1001,100 @@ fn view_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) 
         .border_color(theme::border())
         .rounded_lg()
         .shadow_lg()
-        .children([
-            menu_action(
-                "view-toggle-sidebar",
-                if state.sidebar_collapsed {
-                    "Expand sidebar"
-                } else {
-                    "Collapse sidebar"
-                },
-                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                    this.toggle_sidebar(cx);
+        .child(menu_section("Change content layout"))
+        .children(CONTENT_LAYOUTS.iter().map(|layout| {
+            let value = (*layout).to_owned();
+            let label = if state.content_layout == *layout {
+                format!("✓ {layout}")
+            } else {
+                (*layout).to_owned()
+            };
+            dynamic_menu_action(
+                ElementId::Name(format!("view-layout-{}", layout_slug(layout)).into()),
+                label,
+                window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                    this.set_content_layout(&value, cx);
                 }),
-            ),
-            menu_action(
-                "view-search",
-                "Search tasks",
-                window.listener_for(&cx.entity(), |this, _event, window, cx| {
-                    this.toggle_search(window, cx);
-                }),
-            ),
-            menu_action(
-                "view-toggle-archived",
-                if state.show_archived {
-                    "Hide archived tasks"
-                } else {
-                    "Show archived tasks"
-                },
-                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                    this.toggle_archived_visibility(cx);
-                }),
-            ),
-            menu_action(
-                "view-reset",
-                "Reset view",
-                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                    if this.sidebar_collapsed {
-                        this.sidebar_collapsed = false;
-                    }
-                    this.view_open = false;
-                    cx.notify();
-                }),
-            ),
-        ])
+            )
+        }))
+        .child(menu_section("Panels"))
+        .child(menu_action(
+            "view-bottom-panel",
+            if state.bottom_panel_open {
+                "Hide bottom panel"
+            } else {
+                "Bottom panel"
+            },
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.toggle_bottom_panel(cx);
+            }),
+        ))
+        .child(menu_action(
+            "view-split-view",
+            if state.side_panel_open {
+                "Hide split view"
+            } else {
+                "Split view"
+            },
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.toggle_side_panel(cx);
+            }),
+        ))
+        .child(menu_action(
+            "view-fullscreen",
+            if state.fullscreen {
+                "Exit fullscreen"
+            } else {
+                "Fullscreen"
+            },
+            window.listener_for(&cx.entity(), |this, _event, window, cx| {
+                this.toggle_fullscreen(window, cx);
+            }),
+        ))
+        .child(menu_action(
+            "view-compact-right",
+            "Compact on the right",
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.set_content_layout("Side chat", cx);
+            }),
+        ))
+        .child(menu_section("Navigation"))
+        .child(menu_action(
+            "view-toggle-sidebar",
+            if state.sidebar_collapsed {
+                "Expand sidebar"
+            } else {
+                "Collapse sidebar"
+            },
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.toggle_sidebar(cx);
+            }),
+        ))
+        .child(menu_action(
+            "view-search",
+            "Search tasks",
+            window.listener_for(&cx.entity(), |this, _event, window, cx| {
+                this.toggle_search(window, cx);
+            }),
+        ))
+        .child(menu_action(
+            "view-toggle-archived",
+            if state.show_archived {
+                "Hide archived tasks"
+            } else {
+                "Show archived tasks"
+            },
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.toggle_archived_visibility(cx);
+            }),
+        ))
+        .child(menu_action(
+            "view-reset",
+            "Reset view",
+            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                this.reset_view(cx);
+            }),
+        ))
 }
 
 fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
@@ -1184,36 +1238,305 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
 
 fn thread_view(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
     let task = state.current_task();
-    div()
+    let transcript = div()
+        .id("transcript-scroll")
+        .flex_1()
+        .min_w_0()
+        .min_h_0()
+        .overflow_y_scroll()
+        .child(
+            div()
+                .id("transcript-content")
+                .w_full()
+                .max_w(px(theme::CONTENT_MAX_WIDTH))
+                .mx_auto()
+                .px_8()
+                .pt_6()
+                .pb_4()
+                .flex()
+                .flex_col()
+                .gap_5()
+                .children((state.content_layout != "Chat").then(|| {
+                    div()
+                        .id("content-layout-banner")
+                        .bg(theme::accent_soft())
+                        .border_1()
+                        .border_color(theme::border())
+                        .rounded_lg()
+                        .px_3()
+                        .py_2()
+                        .text_size(rems(0.72))
+                        .text_color(theme::text_muted())
+                        .child(format!("{} layout", state.content_layout))
+                }))
+                .children(task.map(|task| thread_entries(task, state, window, cx)))
+                .children((task.is_some() && state.streaming).then(|| streaming_status()))
+                .child(div().h(px(10.0)).child("")),
+        );
+    let mut content_row = div()
+        .id("thread-content-row")
+        .flex()
+        .flex_1()
+        .min_h_0()
+        .child(transcript);
+    if state.side_panel_open {
+        content_row = content_row.child(thread_side_panel(state, window, cx));
+    }
+    let mut body = div()
         .id("thread-view")
         .flex()
         .flex_col()
         .flex_1()
         .min_h_0()
+        .child(content_row);
+    if state.bottom_panel_open {
+        body = body.child(thread_bottom_panel(state, window, cx));
+    }
+    body.child(composer(state, window, cx))
+}
+
+fn thread_side_panel(
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
+    let task = state.current_task();
+    let layout = state.content_layout.as_str();
+    let title = match layout {
+        "Files" => "Files",
+        "Browser" => "Browser",
+        "Review" => "Review",
+        "Task tabs" => "Task tabs",
+        _ => "Side chat",
+    };
+    let content = match layout {
+        "Files" => {
+            let files = task
+                .into_iter()
+                .flat_map(|task| {
+                    let path = std::iter::once(
+                        div()
+                            .id("file-root-path")
+                            .text_color(theme::text_muted())
+                            .child(task.path.clone()),
+                    );
+                    let entries = task.entries.iter().filter_map(|entry| match entry {
+                        Entry::Attachment { id, name, .. } => Some(
+                            div()
+                                .id(ElementId::Name(format!("file-attachment-{id}").into()))
+                                .text_color(theme::text())
+                                .child(format!("▧ {name}")),
+                        ),
+                        Entry::Diff { id, path, .. } => Some(
+                            div()
+                                .id(ElementId::Name(format!("file-diff-{id}").into()))
+                                .text_color(theme::text())
+                                .child(format!("◌ {path}")),
+                        ),
+                        _ => None,
+                    });
+                    path.chain(entries)
+                })
+                .collect::<Vec<_>>();
+            if files.is_empty() {
+                div()
+                    .id("files-empty")
+                    .text_color(theme::text_faint())
+                    .child("No files attached to this task")
+            } else {
+                div()
+                    .id("files-list")
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .children(files)
+            }
+        }
+        "Browser" => div()
+            .id("browser-surface")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().text_color(theme::text()).child("Browser"))
+            .child(
+                div()
+                    .text_color(theme::text_faint())
+                    .child("No browser surface is active for this task."),
+            )
+            .child(text_button(
+                "browser-refresh",
+                "Refresh",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.notify_success("Browser surface refreshed", cx);
+                }),
+            )),
+        "Review" => div()
+            .id("review-surface")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().text_color(theme::text()).child("Working tree review"))
+            .child(
+                div()
+                    .text_color(theme::text_faint())
+                    .child("Inspect uncommitted changes in the current project."),
+            )
+            .child(text_button(
+                "review-run",
+                "Review changes",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.review_current(cx);
+                }),
+            )),
+        "Task tabs" => div()
+            .id("task-tabs-surface")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .children([
+                text_button(
+                    "task-tab-chat",
+                    "Chat",
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.set_content_layout("Chat", cx);
+                    }),
+                ),
+                text_button(
+                    "task-tab-detail",
+                    "Detail",
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.set_content_layout("Detail", cx);
+                    }),
+                ),
+                text_button(
+                    "task-tab-review",
+                    "Review",
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.set_content_layout("Review", cx);
+                    }),
+                ),
+            ]),
+        _ => div()
+            .id("side-chat-surface")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().text_color(theme::text()).child("Side chat"))
+            .child(
+                div()
+                    .text_color(theme::text_faint())
+                    .child("Keep a focused conversation beside the current task."),
+            )
+            .child(text_button(
+                "side-chat-focus",
+                "Focus composer",
+                window.listener_for(&cx.entity(), |this, _event, window, _cx| {
+                    window.focus(&this.input_focus);
+                }),
+            )),
+    };
+    div()
+        .id("thread-side-panel")
+        .w(px(292.0))
+        .min_w(px(292.0))
+        .h_full()
+        .overflow_y_scroll()
+        .border_l_1()
+        .border_color(theme::border())
+        .bg(theme::bg_surface())
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap_3()
         .child(
             div()
-                .id("transcript-scroll")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .child(
-                    div()
-                        .id("transcript-content")
-                        .w_full()
-                        .max_w(px(theme::CONTENT_MAX_WIDTH))
-                        .mx_auto()
-                        .px_8()
-                        .pt_6()
-                        .pb_4()
-                        .flex()
-                        .flex_col()
-                        .gap_5()
-                        .children(task.map(|task| thread_entries(task, state, window, cx)))
-                        .children((task.is_some() && state.streaming).then(|| streaming_status()))
-                        .child(div().h(px(10.0)).child("")),
-                ),
+                .text_size(rems(0.82))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::text())
+                .child(title),
         )
-        .child(composer(state, window, cx))
+        .child(content)
+}
+
+fn thread_bottom_panel(
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
+    let task = state.current_task();
+    let detail = task
+        .map(|task| {
+            format!(
+                "Status: {} · Model: {} · Reasoning: {} · Path: {}",
+                task.status,
+                state.model_label(&task.model),
+                task.reasoning,
+                task.path
+            )
+        })
+        .unwrap_or_else(|| "No task selected".into());
+    let terminal = task
+        .and_then(|task| {
+            task.entries.iter().rev().find_map(|entry| match entry {
+                Entry::Tool { output, .. } if !output.is_empty() => Some(output.clone()),
+                Entry::Code { output, .. } if !output.is_empty() => Some(output.clone()),
+                _ => None,
+            })
+        })
+        .unwrap_or_else(|| "No terminal output yet".into());
+    let content = if state.content_layout == "Terminal" {
+        div()
+            .id("bottom-terminal-output")
+            .bg(theme::code_bg())
+            .rounded_md()
+            .p_3()
+            .text_size(rems(0.72))
+            .text_color(theme::text_muted())
+            .child(terminal)
+    } else if state.content_layout == "Review" {
+        div()
+            .id("bottom-review-output")
+            .text_color(theme::text_muted())
+            .child("Review changes are shown inline in the transcript.")
+            .child(text_button(
+                "bottom-review-run",
+                "Review changes",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.review_current(cx);
+                }),
+            ))
+    } else {
+        div()
+            .id("bottom-detail-output")
+            .text_color(theme::text_muted())
+            .child(detail)
+    };
+    div()
+        .id("thread-bottom-panel")
+        .w_full()
+        .max_h(px(170.0))
+        .overflow_y_scroll()
+        .border_t_1()
+        .border_color(theme::border())
+        .bg(theme::bg_surface())
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .text_size(rems(0.78))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::text())
+                .child(if state.content_layout == "Terminal" {
+                    "Terminal"
+                } else if state.content_layout == "Review" {
+                    "Review"
+                } else {
+                    "Bottom panel"
+                }),
+        )
+        .child(content)
 }
 
 fn thread_entries(
@@ -1299,7 +1622,7 @@ fn thread_entries(
 
 fn entry_view(
     entry: &Entry,
-    _state: &AppState,
+    state: &AppState,
     window: &mut Window,
     cx: &mut Context<AppState>,
 ) -> Stateful<Div> {
@@ -1463,7 +1786,7 @@ fn entry_view(
                 div()
                     .px_3()
                     .py_3()
-                    .text_size(rems(0.75))
+                    .text_size(rems(state.settings.code_font_size as f32 / 16.0))
                     .text_color(theme::text_muted())
                     .whitespace_normal()
                     .child(code.clone()),
@@ -1628,16 +1951,28 @@ fn entry_view(
                         .child(text_button(
                             ElementId::Name(format!("approval-allow-{approval_id}").into()),
                             allow_label,
-                            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                                this.approve_current(true, cx)
-                            }),
+                            {
+                                let approval_id = approval_id.clone();
+                                window.listener_for(
+                                    &cx.entity(),
+                                    move |this, _event, _window, cx| {
+                                        this.approve_interaction(&approval_id, true, cx)
+                                    },
+                                )
+                            },
                         ))
                         .child(text_button(
                             ElementId::Name(format!("approval-deny-{approval_id}").into()),
                             deny_label,
-                            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                                this.approve_current(false, cx)
-                            }),
+                            {
+                                let approval_id = approval_id.clone();
+                                window.listener_for(
+                                    &cx.entity(),
+                                    move |this, _event, _window, cx| {
+                                        this.approve_interaction(&approval_id, false, cx)
+                                    },
+                                )
+                            },
                         ))
                 }))
         }
@@ -1853,6 +2188,16 @@ fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                                     .unwrap_or_default(),
                             )),
                     )
+                    .children(state.settings.show_context_usage.then(|| {
+                        div()
+                            .text_size(rems(0.66))
+                            .text_color(theme::text_faint())
+                            .child(if usage.context == 0 {
+                                "context —".into()
+                            } else {
+                                format!("context {}", format_tokens(usage.context))
+                            })
+                    }))
                     .child(text_button(
                         "composer-model",
                         &model,
@@ -2459,11 +2804,30 @@ fn settings_page_body(
                     }),
                 )),
             ))
+            .child(setting_row(
+                "Code font size",
+                "Font size used for commands and code output",
+                format!("{} px", state.settings.code_font_size),
+                Some(Box::new(
+                    window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                        this.cycle_code_font_size(cx)
+                    }),
+                )),
+            ))
             .child(setting_toggle(
                 "Reduced motion",
                 "Reduce animated transitions and progress effects",
                 state.settings.reduced_motion,
                 "reduced-motion",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_toggle(
+                "Context window usage",
+                "Show context window usage in the composer",
+                state.settings.show_context_usage,
+                "context-usage",
                 state,
                 window,
                 cx,
@@ -2573,7 +2937,7 @@ fn settings_page_body(
                 Some(Box::new(window.listener_for(
                     &cx.entity(),
                     |this, _event, _window, cx| {
-                        this.refresh_catalog(cx);
+                        this.reload_mcp_servers(cx);
                     },
                 ))),
             )),
@@ -2620,7 +2984,23 @@ fn settings_page_body(
                 "Marketplaces",
                 "Plugin sources",
                 format!("{} source(s)", state.catalog.plugins.len()),
-                None,
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.refresh_marketplaces(cx);
+                    },
+                ))),
+            ))
+            .child(setting_row(
+                "Browse plugins or skills",
+                "Open the native plugin destination",
+                "Open".into(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.set_route(Route::Plugins, cx);
+                    },
+                ))),
             )),
         SettingsPage::Keybindings => div()
             .flex()
@@ -2684,7 +3064,23 @@ fn settings_page_body(
                 } else {
                     state.settings.worktree_root.clone()
                 },
-                None,
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.pick_worktree_root(cx);
+                    },
+                ))),
+            ))
+            .child(setting_row(
+                "Add project",
+                "Import a local folder into the project list",
+                "Choose folder".into(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.pick_project(cx);
+                    },
+                ))),
             ))
             .child(setting_row(
                 "Auto setup",
@@ -2715,7 +3111,76 @@ fn settings_page_body(
                 "Review",
                 "Open changes in the native review surface",
                 "Available".into(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.review_current(cx);
+                    },
+                ))),
+            ))
+            .child(setting_toggle(
+                "Git-based review",
+                "Enable review actions for the current repository",
+                state.settings.git_review_enabled,
+                "git-review",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_toggle(
+                "Draft pull requests",
+                "Create pull requests as drafts by default",
+                state.settings.draft_prs,
+                "draft-prs",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_toggle(
+                "Force push",
+                "Allow force-push actions when explicitly requested",
+                state.settings.force_push,
+                "force-push",
+                state,
+                window,
+                cx,
+            ))
+            .child(setting_row(
+                "Branch prefix",
+                "Prefix used for Codex-created branches",
+                state.settings.branch_prefix.clone(),
                 None,
+            ))
+            .child(setting_row(
+                "Merge method",
+                "Default pull request merge strategy",
+                state.settings.merge_method.clone(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.cycle_merge_method(cx);
+                    },
+                ))),
+            ))
+            .child(setting_row(
+                "Review delivery",
+                "Deliver review results inline or in a detached view",
+                state.settings.review_delivery.clone(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.cycle_review_delivery(cx);
+                    },
+                ))),
+            ))
+            .child(setting_toggle(
+                "Auto merge",
+                "Enable automatic merging after checks pass",
+                state.settings.auto_merge,
+                "auto-merge",
+                state,
+                window,
+                cx,
             )),
     }
 }
@@ -2886,4 +3351,46 @@ fn menu_action(
         .child(label)
         .on_click(listener)
         .hover(|style| style.bg(theme::bg_hover()).text_color(theme::text()))
+}
+
+fn menu_section(id: &'static str) -> Stateful<Div> {
+    div()
+        .id(id)
+        .px_2()
+        .pt_2()
+        .pb_1()
+        .text_size(rems(0.64))
+        .text_color(theme::text_faint())
+        .child(id.replace('-', " "))
+}
+
+fn dynamic_menu_action(
+    id: impl Into<ElementId>,
+    label: String,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .px_2()
+        .py_2()
+        .rounded_md()
+        .cursor_pointer()
+        .text_size(rems(0.76))
+        .text_color(theme::text_muted())
+        .child(label)
+        .on_click(listener)
+        .hover(|style| style.bg(theme::bg_hover()).text_color(theme::text()))
+}
+
+fn layout_slug(layout: &str) -> String {
+    layout
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }

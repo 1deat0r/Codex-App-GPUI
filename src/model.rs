@@ -222,14 +222,32 @@ pub struct Settings {
     pub sandbox_mode: String,
     #[serde(default = "default_font_size")]
     pub font_size: u8,
+    #[serde(default = "default_code_font_size")]
+    pub code_font_size: u8,
     #[serde(default = "default_true")]
     pub notifications: bool,
     #[serde(default = "default_true")]
     pub sound_effects: bool,
     #[serde(default)]
     pub reduced_motion: bool,
+    #[serde(default = "default_true")]
+    pub show_context_usage: bool,
     #[serde(default)]
     pub worktree_root: String,
+    #[serde(default = "default_true")]
+    pub git_review_enabled: bool,
+    #[serde(default = "default_branch_prefix")]
+    pub branch_prefix: String,
+    #[serde(default)]
+    pub force_push: bool,
+    #[serde(default)]
+    pub draft_prs: bool,
+    #[serde(default = "default_merge_method")]
+    pub merge_method: String,
+    #[serde(default = "default_review_delivery")]
+    pub review_delivery: String,
+    #[serde(default)]
+    pub auto_merge: bool,
 }
 
 fn default_theme() -> String {
@@ -250,8 +268,20 @@ fn default_sandbox_mode() -> String {
 fn default_font_size() -> u8 {
     14
 }
+fn default_code_font_size() -> u8 {
+    13
+}
 fn default_true() -> bool {
     true
+}
+fn default_branch_prefix() -> String {
+    "codex/".into()
+}
+fn default_merge_method() -> String {
+    "squash".into()
+}
+fn default_review_delivery() -> String {
+    "inline".into()
 }
 
 impl Default for Settings {
@@ -263,10 +293,19 @@ impl Default for Settings {
             approval_mode: default_approval_mode(),
             sandbox_mode: default_sandbox_mode(),
             font_size: default_font_size(),
+            code_font_size: default_code_font_size(),
             notifications: true,
             sound_effects: true,
             reduced_motion: false,
+            show_context_usage: true,
             worktree_root: String::new(),
+            git_review_enabled: true,
+            branch_prefix: default_branch_prefix(),
+            force_push: false,
+            draft_prs: false,
+            merge_method: default_merge_method(),
+            review_delivery: default_review_delivery(),
+            auto_merge: false,
         }
     }
 }

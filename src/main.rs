@@ -30,6 +30,7 @@ fn main() {
         .ok()
         .flatten()
         .unwrap_or_else(Snapshot::demo);
+    let initial_fullscreen = snapshot.fullscreen;
     Application::new().run(move |app: &mut App| {
         app.activate(true);
         let window = WindowOptions {
@@ -52,6 +53,9 @@ fn main() {
                 state.init(cx);
                 state
             });
+            if initial_fullscreen {
+                window.toggle_fullscreen();
+            }
             window.focus(&entity.read(app).input_focus);
             entity
         })

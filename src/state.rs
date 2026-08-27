@@ -1,7 +1,7 @@
 //! UI state and interaction reducer for the native client.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +10,8 @@ use gpui::{AsyncApp, Context, FocusHandle, KeyDownEvent, PathPromptOptions, Weak
 use serde_json::{json, Value};
 
 use crate::model::{
-    ChildTask, Entry, Goal, PlanStep, Project, Route, Settings, SettingsPage, Task, Workspace,
+    Automation, ChildTask, Entry, Goal, PlanStep, Project, Route, Settings, SettingsPage, Task,
+    Workspace,
 };
 use crate::persistence::{self, ShareArtifact, Snapshot};
 use crate::protocol::{AppServerClient, ServerThread};
@@ -18,6 +19,24 @@ use crate::protocol::{AppServerClient, ServerThread};
 pub const MODEL_OPTIONS: &[&str] = &["5.6 Luna Max", "5.6 Sol", "5.5", "5.4 Mini"];
 pub const REASONING_OPTIONS: &[&str] = &["auto", "low", "high", "max"];
 pub const COMPOSER_MODES: &[&str] = &["Agent", "Chat", "Ask"];
+pub const CONTENT_LAYOUTS: &[&str] = &[
+    "Chat",
+    "Task tabs",
+    "Files",
+    "Side chat",
+    "Browser",
+    "Review",
+    "Detail",
+    "Terminal",
+];
+
+fn normalize_content_layout(layout: &str) -> &str {
+    CONTENT_LAYOUTS
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == layout)
+        .unwrap_or("Chat")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelOption {
@@ -277,12 +296,18 @@ impl PendingInteraction {
 
     pub fn response(&self, approved: bool) -> Value {
         match self.kind {
-            InteractionKind::CommandApproval => json!({
-                "decision": if approved { "accept" } else { "decline" }
-            }),
-            InteractionKind::FileChangeApproval => json!({
-                "decision": if approved { "accept" } else { "decline" }
-            }),
+            InteractionKind::CommandApproval | InteractionKind::FileChangeApproval => {
+                let decision = if approved {
+                    self.choices
+                        .iter()
+                        .find(|choice| matches!(choice.as_str(), "acceptForSession" | "accept"))
+                        .map(String::as_str)
+                        .unwrap_or("accept")
+                } else {
+                    "decline"
+                };
+                json!({ "decision": decision })
+            }
             InteractionKind::PermissionsApproval => {
                 if approved {
                     json!({
@@ -293,7 +318,34 @@ impl PendingInteraction {
                     json!({ "permissions": {}, "scope": "turn" })
                 }
             }
-            InteractionKind::UserInput => json!({ "answers": {} }),
+            InteractionKind::UserInput => {
+                let mut answers = serde_json::Map::new();
+                if approved {
+                    if let Some(questions) = self.params.get("questions").and_then(Value::as_array)
+                    {
+                        for question in questions {
+                            let Some(id) = question.get("id").and_then(Value::as_str) else {
+                                continue;
+                            };
+                            let answer = question
+                                .get("options")
+                                .and_then(Value::as_array)
+                                .and_then(|options| options.first())
+                                .and_then(|option| {
+                                    option
+                                        .get("label")
+                                        .or_else(|| option.get("value"))
+                                        .and_then(Value::as_str)
+                                })
+                                .unwrap_or("");
+                            if !answer.is_empty() {
+                                answers.insert(id.into(), json!({ "answers": [answer] }));
+                            }
+                        }
+                    }
+                }
+                json!({ "answers": answers })
+            }
             InteractionKind::McpElicitation => json!({
                 "action": if approved { "accept" } else { "cancel" }
             }),
@@ -310,6 +362,14 @@ impl PendingInteraction {
             }),
             InteractionKind::Unknown => safe_server_request_response(&self.method),
         }
+    }
+}
+
+fn pending_interaction_key(pending: &PendingInteraction) -> String {
+    if pending.item_id.is_empty() {
+        format!("request-{}", value_text(&pending.request_id))
+    } else {
+        pending.item_id.clone()
     }
 }
 
@@ -341,6 +401,10 @@ pub struct AppState {
     pub view_open: bool,
     pub sidebar_collapsed: bool,
     pub show_archived: bool,
+    pub content_layout: String,
+    pub bottom_panel_open: bool,
+    pub side_panel_open: bool,
+    pub fullscreen: bool,
     pub search_open: bool,
     pub toast: Option<String>,
     pub connection: ConnectionState,
@@ -349,6 +413,7 @@ pub struct AppState {
     pub voice_active: bool,
     pub active_turn_id: Option<String>,
     pub pending_interaction: Option<PendingInteraction>,
+    pub pending_interactions: Vec<PendingInteraction>,
     pub github: GitHubState,
     pub rename_open: bool,
     pub rename_draft: String,
@@ -384,6 +449,10 @@ impl AppState {
             view_open: false,
             sidebar_collapsed: snapshot.sidebar_collapsed,
             show_archived: snapshot.show_archived,
+            content_layout: normalize_content_layout(&snapshot.content_layout).to_owned(),
+            bottom_panel_open: snapshot.bottom_panel_open,
+            side_panel_open: snapshot.side_panel_open,
+            fullscreen: snapshot.fullscreen,
             search_open: false,
             toast: None,
             connection: ConnectionState::Demo,
@@ -392,6 +461,7 @@ impl AppState {
             voice_active: false,
             active_turn_id: None,
             pending_interaction: None,
+            pending_interactions: Vec::new(),
             github: GitHubState {
                 status: "Not loaded".into(),
                 ..GitHubState::default()
@@ -419,6 +489,10 @@ impl AppState {
             selected_task: self.selected_task.clone(),
             sidebar_collapsed: self.sidebar_collapsed,
             show_archived: self.show_archived,
+            content_layout: self.content_layout.clone(),
+            bottom_panel_open: self.bottom_panel_open,
+            side_panel_open: self.side_panel_open,
+            fullscreen: self.fullscreen,
         }
     }
 
@@ -676,6 +750,7 @@ impl AppState {
                     self.streaming = false;
                     self.active_turn_id = None;
                     self.pending_interaction = None;
+                    self.pending_interactions.clear();
                     if let Some(task) = self.current_task_mut() {
                         for entry in &mut task.entries {
                             if let Entry::Approval { requested, .. } = entry {
@@ -1121,20 +1196,31 @@ impl AppState {
                 persist = true;
             }
             "serverRequest/resolved" => {
-                if self
-                    .pending_interaction
-                    .as_ref()
-                    .is_some_and(|pending| params.get("requestId") == Some(&pending.request_id))
-                {
-                    self.pending_interaction = None;
-                    if let Some(task) = self.current_task_mut() {
-                        for entry in &mut task.entries {
-                            if let Entry::Approval { requested, .. } = entry {
-                                *requested = false;
+                if let Some(request_id) = params.get("requestId") {
+                    let removed = self
+                        .pending_interactions
+                        .iter()
+                        .position(|pending| &pending.request_id == request_id)
+                        .map(|index| self.pending_interactions.remove(index));
+                    if let Some(removed) = removed {
+                        self.promote_pending_interaction();
+                        let task_id = if removed.thread_id.is_empty() {
+                            self.selected_task.clone()
+                        } else {
+                            removed.thread_id.clone()
+                        };
+                        let interaction_id = pending_interaction_key(&removed);
+                        if let Some(task) = self.task_mut_by_id(&task_id) {
+                            for entry in &mut task.entries {
+                                if let Entry::Approval { id, requested, .. } = entry {
+                                    if id == &interaction_id {
+                                        *requested = false;
+                                    }
+                                }
                             }
                         }
+                        persist = true;
                     }
-                    persist = true;
                 }
             }
             "error" | "warning" => {
@@ -1182,7 +1268,10 @@ impl AppState {
         let thread_id = (!pending.thread_id.is_empty())
             .then(|| pending.thread_id.clone())
             .unwrap_or_else(|| self.selected_task.clone());
-        self.pending_interaction = Some(pending.clone());
+        if self.pending_interaction.is_none() {
+            self.pending_interaction = Some(pending.clone());
+        }
+        self.pending_interactions.push(pending.clone());
         let thread_id = thread_id;
         let entry = Entry::Approval {
             id: if pending.item_id.is_empty() {
@@ -1256,6 +1345,10 @@ impl AppState {
             Some(thread_id) => self.task_mut_by_id(thread_id),
             None => self.current_task_mut(),
         }
+    }
+
+    fn promote_pending_interaction(&mut self) {
+        self.pending_interaction = self.pending_interactions.first().cloned();
     }
 
     pub fn current_task(&self) -> Option<&Task> {
@@ -1405,7 +1498,7 @@ impl AppState {
     pub fn create_automation(&mut self, cx: &mut Context<Self>) {
         let task = self.current_task().cloned();
         let id = format!("automation-{}", self.workspace.automations.len() + 1);
-        self.workspace.automations.push(crate::model::Automation {
+        self.workspace.automations.push(Automation {
             id,
             name: task
                 .as_ref()
@@ -1836,6 +1929,18 @@ impl AppState {
         self.notify_success(&format!("Font size: {value} px"), cx);
     }
 
+    pub fn cycle_code_font_size(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[u8] = &[12, 13, 14, 15, 16, 18];
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == self.settings.code_font_size)
+            .unwrap_or(1);
+        self.settings.code_font_size = OPTIONS[(position + 1) % OPTIONS.len()];
+        let value = self.settings.code_font_size;
+        self.persist(cx);
+        self.notify_success(&format!("Code font size: {value} px"), cx);
+    }
+
     pub fn toggle_reduced_motion(&mut self, cx: &mut Context<Self>) {
         self.settings.reduced_motion = !self.settings.reduced_motion;
         let value = if self.settings.reduced_motion {
@@ -1859,6 +1964,30 @@ impl AppState {
         self.persist(cx);
         self.sync_live_thread_settings(cx);
         self.notify_success(&format!("Sandbox: {value}"), cx);
+    }
+
+    pub fn cycle_merge_method(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[&str] = &["merge", "squash", "rebase"];
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == self.settings.merge_method)
+            .unwrap_or(1);
+        self.settings.merge_method = OPTIONS[(position + 1) % OPTIONS.len()].into();
+        let value = self.settings.merge_method.clone();
+        self.persist(cx);
+        self.notify_success(&format!("Merge method: {value}"), cx);
+    }
+
+    pub fn cycle_review_delivery(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[&str] = &["inline", "detached"];
+        let position = OPTIONS
+            .iter()
+            .position(|option| *option == self.settings.review_delivery)
+            .unwrap_or(0);
+        self.settings.review_delivery = OPTIONS[(position + 1) % OPTIONS.len()].into();
+        let value = self.settings.review_delivery.clone();
+        self.persist(cx);
+        self.notify_success(&format!("Review delivery: {value}"), cx);
     }
 
     fn sync_live_thread_settings(&self, cx: &mut Context<Self>) {
@@ -1952,6 +2081,115 @@ impl AppState {
             },
         )
         .detach();
+    }
+
+    pub fn pick_worktree_root(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose worktree root".into()),
+        });
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = receiver.await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(Ok(Some(paths))) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            this.settings.worktree_root = path.display().to_string();
+                            this.persist(cx);
+                            this.notify_success("Worktree root updated", cx);
+                        }
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(error)) => this.fail(&format!("Worktree picker failed: {error}"), cx),
+                    Err(error) => this.fail(&format!("Worktree picker cancelled: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn pick_project(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Add project".into()),
+        });
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = receiver.await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(Ok(Some(paths))) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            this.add_local_project(path, cx);
+                        }
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(error)) => this.fail(&format!("Project picker failed: {error}"), cx),
+                    Err(error) => this.fail(&format!("Project picker cancelled: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    fn add_local_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !path.is_dir() {
+            self.fail("A project must be a directory", cx);
+            return;
+        }
+        let path = path.to_string_lossy().into_owned();
+        if let Some(project) = self
+            .workspace
+            .projects
+            .iter()
+            .find(|project| project.path == path)
+        {
+            if let Some(task) = project.tasks.first() {
+                self.select_task(project.id.clone(), task.id.clone(), cx);
+            }
+            self.notify_success("Project already added", cx);
+            return;
+        }
+        let id = unique_project_id(&path, &self.workspace);
+        let name = Path::new(&path)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Project")
+            .to_owned();
+        let task_id = format!("{id}-task-1");
+        let task = Task {
+            id: task_id.clone(),
+            title: "New task".into(),
+            project_id: id.clone(),
+            status: "idle".into(),
+            path: path.clone(),
+            branch: None,
+            model: self.settings.default_model.clone(),
+            reasoning: self.settings.default_reasoning.clone(),
+            updated_at: "Now".into(),
+            archived: false,
+            pinned: false,
+            entries: Vec::new(),
+            plan: Vec::new(),
+            usage: Default::default(),
+            goal: None,
+            children: Vec::new(),
+        };
+        self.workspace.projects.push(Project {
+            id: id.clone(),
+            name,
+            path,
+            tasks: vec![task],
+            collapsed: false,
+        });
+        self.select_task(id, task_id, cx);
+        self.notify_success("Project added", cx);
     }
 
     pub fn insert_mention(&mut self, cx: &mut Context<Self>) {
@@ -2195,6 +2433,85 @@ impl AppState {
         self.notify_success("Composer cleared", cx);
     }
 
+    pub fn set_content_layout(&mut self, layout: &str, cx: &mut Context<Self>) {
+        let layout = normalize_content_layout(layout);
+        self.content_layout = layout.to_owned();
+        match layout {
+            "Files" | "Side chat" | "Browser" | "Review" => {
+                self.side_panel_open = true;
+                self.bottom_panel_open = false;
+            }
+            "Detail" | "Terminal" => {
+                self.bottom_panel_open = true;
+                self.side_panel_open = false;
+            }
+            _ => {
+                self.side_panel_open = false;
+                self.bottom_panel_open = false;
+            }
+        }
+        self.view_open = false;
+        self.persist(cx);
+        self.notify_success(&format!("Content layout: {}", self.content_layout), cx);
+    }
+
+    pub fn toggle_bottom_panel(&mut self, cx: &mut Context<Self>) {
+        self.bottom_panel_open = !self.bottom_panel_open;
+        if self.bottom_panel_open && self.content_layout == "Chat" {
+            self.content_layout = "Detail".into();
+        }
+        self.persist(cx);
+        self.notify_success(
+            if self.bottom_panel_open {
+                "Bottom panel opened"
+            } else {
+                "Bottom panel closed"
+            },
+            cx,
+        );
+    }
+
+    pub fn toggle_side_panel(&mut self, cx: &mut Context<Self>) {
+        self.side_panel_open = !self.side_panel_open;
+        if self.side_panel_open && self.content_layout == "Chat" {
+            self.content_layout = "Side chat".into();
+        }
+        self.persist(cx);
+        self.notify_success(
+            if self.side_panel_open {
+                "Side panel opened"
+            } else {
+                "Side panel closed"
+            },
+            cx,
+        );
+    }
+
+    pub fn toggle_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.fullscreen = !self.fullscreen;
+        window.toggle_fullscreen();
+        self.persist(cx);
+        self.notify_success(
+            if self.fullscreen {
+                "Fullscreen layout enabled"
+            } else {
+                "Fullscreen layout disabled"
+            },
+            cx,
+        );
+    }
+
+    pub fn reset_view(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = false;
+        self.content_layout = "Chat".into();
+        self.bottom_panel_open = false;
+        self.side_panel_open = false;
+        self.fullscreen = false;
+        self.view_open = false;
+        self.persist(cx);
+        self.notify_success("View reset", cx);
+    }
+
     pub fn toggle_reasoning(&mut self, reasoning_id: String, cx: &mut Context<Self>) {
         let Some(task) = self.current_task_mut() else {
             return;
@@ -2412,12 +2729,42 @@ impl AppState {
     }
 
     pub fn approve_current(&mut self, approved: bool, cx: &mut Context<Self>) {
-        let pending = self.pending_interaction.take();
-        if let Some(task) = self.current_task_mut() {
+        let Some(interaction_id) = self
+            .pending_interaction
+            .as_ref()
+            .map(pending_interaction_key)
+        else {
+            return;
+        };
+        self.approve_interaction(&interaction_id, approved, cx);
+    }
+
+    pub fn approve_interaction(
+        &mut self,
+        interaction_id: &str,
+        approved: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self
+            .pending_interactions
+            .iter()
+            .position(|pending| pending_interaction_key(pending) == interaction_id)
+        else {
+            return;
+        };
+        let pending = self.pending_interactions.remove(index);
+        let task_id = if pending.thread_id.is_empty() {
+            self.selected_task.clone()
+        } else {
+            pending.thread_id.clone()
+        };
+        if let Some(task) = self.task_mut_by_id(&task_id) {
             let label = if approved { "Approved" } else { "Declined" };
             for entry in &mut task.entries {
-                if let Entry::Approval { requested, .. } = entry {
-                    *requested = false;
+                if let Entry::Approval { id, requested, .. } = entry {
+                    if id == interaction_id {
+                        *requested = false;
+                    }
                 }
             }
             task.entries.push(Entry::System {
@@ -2425,12 +2772,13 @@ impl AppState {
                 text: format!("{label} by user"),
             });
         }
-        if let (Some(client), Some(pending)) = (self.live_client.clone(), pending) {
+        if let Some(client) = self.live_client.clone() {
             let response = pending.response(approved);
             if let Err(error) = client.respond(pending.request_id, response) {
                 self.fail(&format!("Approval response failed: {error}"), cx);
             }
         }
+        self.promote_pending_interaction();
         self.persist(cx);
         self.notify_success(
             if approved {
@@ -2447,10 +2795,69 @@ impl AppState {
             "notifications" => self.settings.notifications = !self.settings.notifications,
             "sound" => self.settings.sound_effects = !self.settings.sound_effects,
             "reduced-motion" => self.settings.reduced_motion = !self.settings.reduced_motion,
+            "context-usage" => self.settings.show_context_usage = !self.settings.show_context_usage,
+            "git-review" => self.settings.git_review_enabled = !self.settings.git_review_enabled,
+            "force-push" => self.settings.force_push = !self.settings.force_push,
+            "draft-prs" => self.settings.draft_prs = !self.settings.draft_prs,
+            "auto-merge" => self.settings.auto_merge = !self.settings.auto_merge,
             _ => {}
         }
         self.persist(cx);
         cx.notify();
+    }
+
+    pub fn reload_mcp_servers(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.live_client.clone() else {
+            self.notify_success("MCP server list refreshed locally", cx);
+            return;
+        };
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result =
+                    async_cx
+                        .background_executor()
+                        .spawn(async move {
+                            smol::unblock(move || client.config_mcp_server_reload()).await
+                        })
+                        .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(_) => {
+                        this.refresh_catalog(cx);
+                        this.notify_success("MCP servers reloaded", cx);
+                    }
+                    Err(error) => this.fail(&format!("MCP reload failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn refresh_marketplaces(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.live_client.clone() else {
+            self.notify_success("Marketplace list refreshed locally", cx);
+            return;
+        };
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result =
+                    async_cx
+                        .background_executor()
+                        .spawn(async move {
+                            smol::unblock(move || client.marketplace_upgrade(None)).await
+                        })
+                        .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(_) => {
+                        this.refresh_catalog(cx);
+                        this.notify_success("Marketplaces refreshed", cx);
+                    }
+                    Err(error) => this.fail(&format!("Marketplace refresh failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
     }
 
     pub fn toggle_voice(&mut self, cx: &mut Context<Self>) {
@@ -3500,8 +3907,16 @@ fn is_empty_thread_read_error(error: &anyhow::Error) -> bool {
 }
 
 fn entry_from_server_item(item: &Value) -> Option<Entry> {
+    let item_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
     let id = string_field(item, &["id"]);
-    let item_type = item.get("type").and_then(Value::as_str)?;
+    let id = if id.is_empty() {
+        format!("item-{item_type}-{}", item.to_string().len())
+    } else {
+        id
+    };
     match item_type {
         "userMessage" => Some(Entry::User {
             id,
@@ -3612,7 +4027,14 @@ fn entry_from_server_item(item: &Value) -> Option<Entry> {
         }),
         "imageGeneration" | "imageView" => Some(Entry::Attachment {
             id,
-            name: string_field(item, &["savedPath", "path", "revisedPrompt"]),
+            name: {
+                let name = string_field(item, &["savedPath", "path", "revisedPrompt"]);
+                if name.is_empty() {
+                    item_type.into()
+                } else {
+                    name
+                }
+            },
             attachment_kind: item_type.into(),
         }),
         "contextCompaction" | "compacted" => Some(Entry::System {
@@ -3628,7 +4050,19 @@ fn entry_from_server_item(item: &Value) -> Option<Entry> {
             text: string_field(item, &["review"]),
             time: "Live".into(),
         }),
-        _ => None,
+        _ => Some(Entry::Tool {
+            id,
+            name: item_type.into(),
+            status: normalize_item_status(string_field(item, &["status"])),
+            detail: truncate_text(
+                &string_field(
+                    item,
+                    &["message", "reason", "name", "query", "prompt", "tool"],
+                ),
+                320,
+            ),
+            output: truncate_text(&item.to_string(), 640),
+        }),
     }
 }
 
@@ -3986,6 +4420,43 @@ fn is_image_path(path: &str) -> bool {
     )
 }
 
+fn unique_project_id(path: &str, workspace: &Workspace) -> String {
+    let base = Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("project")
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_owned();
+    let base = if base.is_empty() {
+        "project".to_owned()
+    } else {
+        base
+    };
+    if !workspace.projects.iter().any(|project| project.id == base) {
+        return base;
+    }
+    for suffix in 2..=10_000 {
+        let candidate = format!("{base}-{suffix}");
+        if !workspace
+            .projects
+            .iter()
+            .any(|project| project.id == candidate)
+        {
+            return candidate;
+        }
+    }
+    format!("{base}-{}", workspace.projects.len() + 1)
+}
+
 fn char_byte_index(s: &str, n: usize) -> usize {
     s.char_indices()
         .nth(n)
@@ -4199,6 +4670,48 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(collab, Entry::Tool { name, .. } if name == "collabAgentToolCall"));
+    }
+
+    #[test]
+    fn every_reference_item_family_is_preserved_when_fields_evolve() {
+        let item_types = [
+            "userMessage",
+            "agentMessage",
+            "hookPrompt",
+            "plan",
+            "reasoning",
+            "commandExecution",
+            "fileChange",
+            "mcpToolCall",
+            "dynamicToolCall",
+            "collabToolCall",
+            "collabAgentToolCall",
+            "subAgentActivity",
+            "webSearch",
+            "sleep",
+            "imageGeneration",
+            "imageView",
+            "contextCompaction",
+            "compacted",
+            "enteredReviewMode",
+            "exitedReviewMode",
+            "futureReferenceItem",
+        ];
+        for (index, item_type) in item_types.iter().enumerate() {
+            let entry = entry_from_server_item(&json!({
+                "id": format!("item-{index}"),
+                "type": item_type,
+                "status": "completed",
+                "text": "fixture",
+                "message": "fixture",
+                "command": "true",
+                "cwd": "/tmp",
+                "changes": [{ "path": "fixture.txt", "diff": "+a\n-b" }],
+                "savedPath": "/tmp/fixture.png",
+                "review": "fixture review",
+            }));
+            assert!(entry.is_some(), "item type was dropped: {item_type}");
+        }
     }
 
     #[test]

@@ -24,6 +24,18 @@ pub struct Snapshot {
     pub sidebar_collapsed: bool,
     #[serde(default)]
     pub show_archived: bool,
+    #[serde(default = "default_content_layout")]
+    pub content_layout: String,
+    #[serde(default)]
+    pub bottom_panel_open: bool,
+    #[serde(default)]
+    pub side_panel_open: bool,
+    #[serde(default)]
+    pub fullscreen: bool,
+}
+
+fn default_content_layout() -> String {
+    "Chat".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,6 +68,10 @@ impl Snapshot {
             selected_task: task,
             sidebar_collapsed: false,
             show_archived: false,
+            content_layout: default_content_layout(),
+            bottom_panel_open: false,
+            side_panel_open: false,
+            fullscreen: false,
         }
     }
 }
