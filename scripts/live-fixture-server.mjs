@@ -5,6 +5,8 @@ import readline from "node:readline";
 const cwd = process.cwd();
 const threads = new Map();
 const approvals = new Map();
+const contractRequests = new Map();
+const contractResponses = [];
 let nextThread = 1;
 let nextTurn = 1;
 let nextItem = 1;
@@ -87,11 +89,136 @@ function startTurn(thread, text) {
   approvals.set(requestId, { thread, turn, item });
   request(requestId, "item/commandExecution/requestApproval", {
     threadId: thread.id,
+    turnId: turn.id,
     itemId: item.id,
+    startedAtMs: Date.now(),
     command: "fixture --safe-check",
     cwd,
     reason: "The fixture is checking the approval reducer without touching the filesystem.",
   });
+}
+
+function emitServerRequestContracts(threadId) {
+  const requests = [
+    {
+      method: "item/fileChange/requestApproval",
+      params: {
+        threadId,
+        turnId: "fixture-contract-turn",
+        itemId: "fixture-file-item",
+        startedAtMs: Date.now(),
+        reason: "fixture file approval",
+      },
+    },
+    {
+      method: "item/permissions/requestApproval",
+      params: {
+        threadId,
+        turnId: "fixture-contract-turn",
+        itemId: "fixture-permission-item",
+        startedAtMs: Date.now(),
+        cwd,
+        permissions: {
+          fileSystem: {
+            entries: [
+              {
+                access: "write",
+                path: { type: "path", path: cwd },
+              },
+            ],
+          },
+        },
+        reason: "fixture permission approval",
+      },
+    },
+    {
+      method: "item/tool/requestUserInput",
+      params: {
+        threadId,
+        turnId: "fixture-contract-turn",
+        itemId: "fixture-input-item",
+        isBlocking: true,
+        questions: [
+          {
+            id: "fixture-question",
+            header: "Fixture",
+            question: "Continue the contract test?",
+            options: [{ label: "Yes", description: "Continue" }],
+          },
+        ],
+      },
+    },
+    {
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId,
+        serverName: "fixture-mcp",
+        mode: "form",
+        message: "Confirm the fixture MCP request",
+        requestedSchema: {
+          type: "object",
+          properties: {},
+        },
+      },
+    },
+    {
+      method: "item/tool/call",
+      params: {
+        threadId,
+        turnId: "fixture-contract-turn",
+        callId: "fixture-tool-call",
+        tool: "fixture_tool",
+        arguments: {},
+      },
+    },
+    {
+      method: "execCommandApproval",
+      params: {
+        conversationId: threadId,
+        callId: "fixture-legacy-command",
+        command: ["fixture", "--legacy"],
+        cwd,
+        parsedCmd: [],
+      },
+    },
+    {
+      method: "applyPatchApproval",
+      params: {
+        conversationId: threadId,
+        callId: "fixture-legacy-patch",
+        fileChanges: {},
+      },
+    },
+  ];
+  for (const { method, params } of requests) {
+    const id = nextApproval++;
+    contractRequests.set(id, { method });
+    request(id, method, params);
+  }
+  return requests.length;
+}
+
+function validContractResponse(method, result) {
+  if (!result || typeof result !== "object") return false;
+  switch (method) {
+    case "item/commandExecution/requestApproval":
+    case "item/fileChange/requestApproval":
+      return ["accept", "acceptForSession", "decline", "cancel"].includes(result.decision);
+    case "item/permissions/requestApproval":
+      return result.permissions && typeof result.permissions === "object" && !("decision" in result);
+    case "item/tool/requestUserInput":
+      return result.answers && typeof result.answers === "object";
+    case "mcpServer/elicitation/request":
+      return ["accept", "decline", "cancel"].includes(result.action);
+    case "item/tool/call":
+      return typeof result.success === "boolean" && Array.isArray(result.contentItems);
+    case "execCommandApproval":
+    case "applyPatchApproval":
+      return result.decision === "approved"
+        || (result.decision && typeof result.decision.denied === "object");
+    default:
+      return false;
+  }
 }
 
 function handle(message) {
@@ -213,6 +340,19 @@ function handle(message) {
       case "thread/shellCommand":
         response(id, {});
         break;
+      case "fixture/emitServerRequests": {
+        response(id, { count: emitServerRequestContracts(params.threadId) });
+        break;
+      }
+      case "fixture/assertServerRequests": {
+        const invalid = contractResponses.filter((entry) => !entry.valid);
+        response(id, {
+          count: contractResponses.length,
+          valid: invalid.length === 0,
+          methods: contractResponses.map((entry) => entry.method),
+        });
+        break;
+      }
       case "review/start": {
         const thread = threads.get(params.threadId) ?? createThread();
         const turn = {
@@ -302,6 +442,15 @@ function handle(message) {
         response(id, {});
         break;
     }
+    return;
+  }
+
+  const contract = contractRequests.get(message.id);
+  if (contract) {
+    contractRequests.delete(message.id);
+    const valid = validContractResponse(contract.method, message.result);
+    contractResponses.push({ method: contract.method, valid });
+    notify("fixture/serverRequestValidated", { method: contract.method, valid });
     return;
   }
 

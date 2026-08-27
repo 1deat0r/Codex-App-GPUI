@@ -7,6 +7,30 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Workspace {
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub automations: Vec<Automation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Automation {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub schedule: String,
+    #[serde(default = "default_automation_status")]
+    pub status: String,
+    #[serde(default)]
+    pub next_run: String,
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+}
+
+fn default_automation_status() -> String {
+    "active".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -18,6 +42,16 @@ pub struct Project {
     pub tasks: Vec<Task>,
     #[serde(default)]
     pub collapsed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Goal {
+    #[serde(default)]
+    pub objective: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub token_budget: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,6 +81,8 @@ pub struct Task {
     pub plan: Vec<PlanStep>,
     #[serde(default)]
     pub usage: Usage,
+    #[serde(default)]
+    pub goal: Option<Goal>,
     #[serde(default)]
     pub children: Vec<ChildTask>,
 }
@@ -264,6 +300,7 @@ impl Workspace {
                 entries: Vec::new(),
                 plan: Vec::new(),
                 usage: Usage::default(),
+                goal: None,
                 children: Vec::new(),
             }],
         };
@@ -291,6 +328,16 @@ impl Workspace {
                 ),
                 project("pi-rust", "pi-rust", "Finish pi-rust conversion"),
             ],
+            automations: vec![Automation {
+                id: "parity-review-automation".into(),
+                name: "Parity review checkpoint".into(),
+                prompt: "Review the current parity ledger and run the exhaustive gates.".into(),
+                schedule: "Every weekday at 09:00".into(),
+                status: "active".into(),
+                next_run: "Next weekday".into(),
+                project_id: "codex-app-gpui".into(),
+                task_id: Some("codex-app-gpui-parity".into()),
+            }],
         }
     }
 
@@ -312,6 +359,10 @@ impl Workspace {
         self.projects
             .iter()
             .flat_map(|project| project.tasks.iter().map(move |task| (project, task)))
+    }
+
+    pub fn task_by_id(&self, task_id: &str) -> Option<(&Project, &Task)> {
+        self.all_tasks().find(|(_, task)| task.id == task_id)
     }
 }
 
@@ -376,6 +427,11 @@ impl Task {
                 cached: 1_420,
                 context: 32_000,
             },
+            goal: Some(Goal {
+                objective: "Reach evidence-backed 100% parity across the reference surface".into(),
+                status: "active".into(),
+                token_budget: None,
+            }),
             children: vec![
                 ChildTask {
                     id: "reference-audit".into(),

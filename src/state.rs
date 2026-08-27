@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,9 +10,9 @@ use gpui::{AsyncApp, Context, FocusHandle, KeyDownEvent, PathPromptOptions, Weak
 use serde_json::{json, Value};
 
 use crate::model::{
-    ChildTask, Entry, PlanStep, Project, Route, Settings, SettingsPage, Task, Workspace,
+    ChildTask, Entry, Goal, PlanStep, Project, Route, Settings, SettingsPage, Task, Workspace,
 };
-use crate::persistence::{self, Snapshot};
+use crate::persistence::{self, ShareArtifact, Snapshot};
 use crate::protocol::{AppServerClient, ServerThread};
 
 pub const MODEL_OPTIONS: &[&str] = &["5.6 Luna Max", "5.6 Sol", "5.5", "5.4 Mini"];
@@ -38,6 +39,25 @@ pub struct ServerCatalog {
     pub mcp_servers: Vec<String>,
     pub account_label: Option<String>,
     pub config_summary: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullRequestSummary {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub url: String,
+    pub branch: String,
+    pub author: String,
+    pub review_decision: String,
+    pub checks: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitHubState {
+    pub repository: String,
+    pub status: String,
+    pub pull_requests: Vec<PullRequestSummary>,
 }
 
 impl ServerCatalog {
@@ -187,7 +207,7 @@ impl InteractionKind {
         }
     }
 
-    fn can_render_decision_buttons(self) -> bool {
+    pub fn can_render_decision_buttons(self) -> bool {
         !matches!(self, Self::DynamicToolCall | Self::Unknown)
     }
 }
@@ -329,6 +349,7 @@ pub struct AppState {
     pub voice_active: bool,
     pub active_turn_id: Option<String>,
     pub pending_interaction: Option<PendingInteraction>,
+    pub github: GitHubState,
     pub rename_open: bool,
     pub rename_draft: String,
     pub rename_caret: usize,
@@ -371,6 +392,10 @@ impl AppState {
             voice_active: false,
             active_turn_id: None,
             pending_interaction: None,
+            github: GitHubState {
+                status: "Not loaded".into(),
+                ..GitHubState::default()
+            },
             rename_open: false,
             rename_draft: String::new(),
             rename_caret: 0,
@@ -993,6 +1018,9 @@ impl AppState {
                     } else {
                         "Thread goal cleared"
                     };
+                    if method == "thread/goal/cleared" {
+                        task.goal = None;
+                    }
                     append_system_event(task, method, &params, text);
                     persist = true;
                 }
@@ -1002,6 +1030,15 @@ impl AppState {
                     let goal = params.get("goal").unwrap_or(&params);
                     let objective = string_field(goal, &["objective"]);
                     let status = string_field(goal, &["status"]);
+                    let token_budget = goal
+                        .get("tokenBudget")
+                        .or_else(|| goal.get("token_budget"))
+                        .and_then(Value::as_i64);
+                    task.goal = Some(Goal {
+                        objective: objective.clone(),
+                        status: status.clone(),
+                        token_budget,
+                    });
                     let detail = [objective, status]
                         .into_iter()
                         .filter(|value| !value.is_empty())
@@ -1154,7 +1191,17 @@ impl AppState {
                 pending.item_id.clone()
             },
             title: pending.title.clone(),
-            command: string_field(params, &["command", "questions", "message", "toolName"]),
+            command: string_field(
+                params,
+                &[
+                    "command",
+                    "questions",
+                    "fileChanges",
+                    "permissions",
+                    "message",
+                    "toolName",
+                ],
+            ),
             cwd: string_field(params, &["cwd", "environmentId"]),
             reason: string_field(params, &["reason", "message"]),
             requested: true,
@@ -1340,6 +1387,7 @@ impl AppState {
             entries: Vec::new(),
             plan: Vec::new(),
             usage: Default::default(),
+            goal: None,
             children: Vec::new(),
         };
         if let Some(project) = self
@@ -1352,6 +1400,67 @@ impl AppState {
         }
         self.select_task(project_id, id, cx);
         self.notify_success("New task", cx);
+    }
+
+    pub fn create_automation(&mut self, cx: &mut Context<Self>) {
+        let task = self.current_task().cloned();
+        let id = format!("automation-{}", self.workspace.automations.len() + 1);
+        self.workspace.automations.push(crate::model::Automation {
+            id,
+            name: task
+                .as_ref()
+                .map(|task| format!("Run {}", task.title))
+                .unwrap_or_else(|| "New Codex automation".into()),
+            prompt: task
+                .as_ref()
+                .map(|task| format!("Continue task: {}", task.title))
+                .unwrap_or_default(),
+            schedule: "Every day at 09:00".into(),
+            status: "active".into(),
+            next_run: "Next day".into(),
+            project_id: self.selected_project.clone(),
+            task_id: task.map(|task| task.id),
+        });
+        self.persist(cx);
+        self.notify_success("Automation created", cx);
+    }
+
+    pub fn toggle_automation(&mut self, automation_id: String, cx: &mut Context<Self>) {
+        let Some(automation) = self
+            .workspace
+            .automations
+            .iter_mut()
+            .find(|automation| automation.id == automation_id)
+        else {
+            return;
+        };
+        automation.status = if automation.status == "active" {
+            "paused".into()
+        } else {
+            "active".into()
+        };
+        let status = automation.status.clone();
+        self.persist(cx);
+        self.notify_success(&format!("Automation {status}"), cx);
+    }
+
+    pub fn run_automation(&mut self, automation_id: String, cx: &mut Context<Self>) {
+        let task_id = self
+            .workspace
+            .automations
+            .iter()
+            .find(|automation| automation.id == automation_id)
+            .and_then(|automation| automation.task_id.clone());
+        if let Some(task_id) = task_id {
+            let project_id = self
+                .workspace
+                .task_by_id(&task_id)
+                .map(|(project, _)| project.id.clone());
+            if let Some(project_id) = project_id {
+                self.select_task(project_id, task_id, cx);
+            }
+        }
+        self.notify_success("Automation queued locally", cx);
     }
 
     pub fn create_live_task(&mut self, cx: &mut Context<Self>) {
@@ -1392,7 +1501,53 @@ impl AppState {
         self.app_menu = None;
         self.view_open = false;
         self.rename_open = false;
+        if route == Route::PullRequests {
+            self.refresh_pull_requests(cx);
+        }
         cx.notify();
+    }
+
+    pub fn refresh_pull_requests(&mut self, cx: &mut Context<Self>) {
+        let path = self
+            .current_project()
+            .map(|project| project.path.clone())
+            .filter(|path| Path::new(path).is_dir());
+        let Some(path) = path else {
+            self.github.status = "Current project is not a local Git checkout".into();
+            self.github.pull_requests.clear();
+            cx.notify();
+            return;
+        };
+        self.github.status = "Loading pull requests…".into();
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move { smol::unblock(move || github_pull_requests(&path)).await })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| {
+                    match result {
+                        Ok((repository, pull_requests)) => {
+                            this.github.repository = repository;
+                            this.github.pull_requests = pull_requests;
+                            this.github.status = "GitHub CLI connected".into();
+                        }
+                        Err(error) => {
+                            this.github.status = format!("GitHub unavailable: {error}");
+                            this.github.pull_requests.clear();
+                        }
+                    }
+                    cx.notify();
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn copy_link(&mut self, link: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(link));
+        self.notify_success("Link copied", cx);
     }
 
     pub fn open_settings(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
@@ -1619,6 +1774,7 @@ impl AppState {
         }
         self.settings.default_model = next.clone();
         self.persist(cx);
+        self.sync_live_thread_settings(cx);
         self.notify_success(&format!("Model: {next}"), cx);
     }
 
@@ -1638,6 +1794,7 @@ impl AppState {
         }
         self.settings.default_reasoning = next.clone();
         self.persist(cx);
+        self.sync_live_thread_settings(cx);
         self.notify_success(&format!("Reasoning: {next}"), cx);
     }
 
@@ -1651,6 +1808,7 @@ impl AppState {
         self.settings.approval_mode = OPTIONS[(position + 1) % OPTIONS.len()].into();
         let value = self.settings.approval_mode.clone();
         self.persist(cx);
+        self.sync_live_thread_settings(cx);
         self.notify_success(&format!("Approval mode: {value}"), cx);
     }
 
@@ -1699,7 +1857,50 @@ impl AppState {
         self.settings.sandbox_mode = OPTIONS[(position + 1) % OPTIONS.len()].into();
         let value = self.settings.sandbox_mode.clone();
         self.persist(cx);
+        self.sync_live_thread_settings(cx);
         self.notify_success(&format!("Sandbox: {value}"), cx);
+    }
+
+    fn sync_live_thread_settings(&self, cx: &mut Context<Self>) {
+        if self.connection != ConnectionState::Live || self.selected_project != "live-codex" {
+            return;
+        }
+        let Some(client) = self.live_client.clone() else {
+            return;
+        };
+        let thread_id = self.selected_task.clone();
+        let model = self
+            .current_task()
+            .map(|task| task.model.clone())
+            .unwrap_or_else(|| self.settings.default_model.clone());
+        let effort = self
+            .current_task()
+            .map(|task| task.reasoning.clone())
+            .unwrap_or_else(|| self.settings.default_reasoning.clone());
+        let settings = json!({
+            "model": model,
+            "effort": effort,
+            "approvalPolicy": self.settings.approval_mode,
+            "sandboxPolicy": sandbox_policy_wire(&self.settings.sandbox_mode),
+        });
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || client.thread_settings_update(&thread_id, settings))
+                            .await
+                    })
+                    .await;
+                if let Err(error) = result {
+                    let _ = this.update(&mut async_cx.clone(), |this, cx| {
+                        this.fail(&format!("Thread settings update failed: {error}"), cx)
+                    });
+                }
+            },
+        )
+        .detach();
     }
 
     pub fn cycle_mode(&mut self, cx: &mut Context<Self>) {
@@ -1764,14 +1965,42 @@ impl AppState {
     }
 
     pub fn share_current(&mut self, cx: &mut Context<Self>) {
-        let link = format!("codex://thread/{}", self.selected_task);
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(link));
-        self.notify_success("Thread link copied", cx);
+        let Some(task) = self.current_task().cloned() else {
+            return;
+        };
+        let id = persistence::new_share_id(&task.id);
+        let artifact = ShareArtifact {
+            id: id.clone(),
+            thread_id: task.id.clone(),
+            title: task.title.clone(),
+            created_at: unix_timestamp_label(),
+            task,
+        };
+        match persistence::save_share(&artifact) {
+            Ok(path) => {
+                let link = format!("codex://shared-thread/{id}");
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(link));
+                self.notify_success(&format!("Thread share copied · {}", path.display()), cx);
+            }
+            Err(error) => self.fail(&format!("Could not create share artifact: {error}"), cx),
+        }
     }
 
     pub fn review_current(&mut self, cx: &mut Context<Self>) {
         if self.connection != ConnectionState::Live || self.selected_project != "live-codex" {
-            self.notify_success("Review is available for live Codex tasks", cx);
+            let Some(task) = self.current_task().cloned() else {
+                return;
+            };
+            match local_review_entry(&task.path, task.entries.len()) {
+                Ok(entry) => {
+                    if let Some(task) = self.current_task_mut() {
+                        upsert_entry(task, entry);
+                    }
+                    self.persist(cx);
+                    self.notify_success("Working tree review ready", cx);
+                }
+                Err(error) => self.fail(&format!("Local review failed: {error}"), cx),
+            }
             return;
         }
         let Some(client) = self.live_client.clone() else {
@@ -1794,6 +2023,11 @@ impl AppState {
             },
         )
         .detach();
+    }
+
+    pub fn copy_diff_path(&mut self, path: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(path));
+        self.notify_success("Path copied", cx);
     }
 
     pub fn steer_current(&mut self, cx: &mut Context<Self>) {
@@ -2831,6 +3065,7 @@ fn task_from_server(thread: &ServerThread) -> Task {
         }],
         plan: Vec::new(),
         usage: Default::default(),
+        goal: None,
         children: Vec::new(),
     }
 }
@@ -3132,6 +3367,131 @@ fn diff_entry_from_value(id: &str, value: &Value) -> Option<Entry> {
         deletions: summary.lines().filter(|line| line.starts_with('-')).count() as u32,
         summary,
     })
+}
+
+fn local_review_entry(path: &str, entry_index: usize) -> anyhow::Result<Entry> {
+    let output = Command::new("git")
+        .args(["diff", "--no-ext-diff", "--unified=0", "--"])
+        .current_dir(path)
+        .output()
+        .map_err(|error| anyhow::anyhow!("start git diff: {error}"))?;
+    if !output.status.success() {
+        return Err(anyhow::anyhow!("git diff exited with {}", output.status));
+    }
+    let diff = String::from_utf8_lossy(&output.stdout);
+    let additions = diff
+        .lines()
+        .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+        .count() as u32;
+    let deletions = diff
+        .lines()
+        .filter(|line| line.starts_with('-') && !line.starts_with("---"))
+        .count() as u32;
+    let path = diff
+        .lines()
+        .find_map(|line| line.strip_prefix("+++ b/"))
+        .filter(|value| *value != "/dev/null")
+        .unwrap_or("Working tree")
+        .to_owned();
+    let summary = if diff.trim().is_empty() {
+        "No uncommitted changes".into()
+    } else {
+        format!("{additions} additions, {deletions} deletions")
+    };
+    Ok(Entry::Diff {
+        id: format!("local-review-{entry_index}"),
+        path,
+        additions,
+        deletions,
+        summary,
+    })
+}
+
+fn github_pull_requests(path: &str) -> anyhow::Result<(String, Vec<PullRequestSummary>)> {
+    let repository = command_text(
+        Command::new("gh")
+            .args([
+                "repo",
+                "view",
+                "--json",
+                "nameWithOwner",
+                "--jq",
+                ".nameWithOwner",
+            ])
+            .current_dir(path),
+    )?;
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--limit",
+            "50",
+            "--json",
+            "number,title,state,url,headRefName,author,reviewDecision,statusCheckRollup",
+        ])
+        .current_dir(path)
+        .env("GH_PAGER", "cat")
+        .env("GH_FORCE_TTY", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|error| anyhow::anyhow!("start gh pr list: {error}"))?;
+    if !output.status.success() {
+        return Err(anyhow::anyhow!("gh pr list exited with {}", output.status));
+    }
+    let values: Vec<Value> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| anyhow::anyhow!("decode gh PR list: {error}"))?;
+    let pull_requests = values
+        .iter()
+        .map(|value| PullRequestSummary {
+            number: value
+                .get("number")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            title: string_field(value, &["title"]),
+            state: string_field(value, &["state"]),
+            url: string_field(value, &["url"]),
+            branch: string_field(value, &["headRefName"]),
+            author: value
+                .get("author")
+                .map(|author| string_field(author, &["login", "name"]))
+                .unwrap_or_default(),
+            review_decision: string_field(value, &["reviewDecision"]),
+            checks: check_summary(value.get("statusCheckRollup")),
+        })
+        .collect();
+    Ok((repository, pull_requests))
+}
+
+fn command_text(command: &mut std::process::Command) -> anyhow::Result<String> {
+    let output = command
+        .env("GH_PAGER", "cat")
+        .env("GH_FORCE_TTY", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|error| anyhow::anyhow!("start GitHub CLI: {error}"))?;
+    if !output.status.success() {
+        return Err(anyhow::anyhow!("GitHub CLI exited with {}", output.status));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn check_summary(value: Option<&Value>) -> String {
+    let Some(checks) = value.and_then(Value::as_array) else {
+        return "No checks".into();
+    };
+    if checks.is_empty() {
+        return "No checks".into();
+    }
+    let completed = checks
+        .iter()
+        .filter(|check| {
+            matches!(
+                string_field(check, &["conclusion", "state"]).as_str(),
+                "SUCCESS" | "success" | "COMPLETED" | "completed"
+            )
+        })
+        .count();
+    format!("{completed}/{} checks passing", checks.len())
 }
 
 fn is_empty_thread_read_error(error: &anyhow::Error) -> bool {
@@ -3606,6 +3966,13 @@ fn attachment_kind(path: &str) -> &'static str {
     } else {
         "file"
     }
+}
+
+fn unix_timestamp_label() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".into())
 }
 
 fn is_image_path(path: &str) -> bool {

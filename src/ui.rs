@@ -7,7 +7,9 @@ use std::path::Path;
 use gpui::*;
 
 use crate::model::{Entry, Route, SettingsPage, Task};
-use crate::state::{child_status_counts, format_tokens, plan_progress, AppMenu, AppState};
+use crate::state::{
+    child_status_counts, format_tokens, plan_progress, AppMenu, AppState, InteractionKind,
+};
 use crate::theme;
 
 pub fn root(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
@@ -1258,6 +1260,36 @@ fn thread_entries(
                     running_children
                 ))
         }))
+        .children(task.goal.as_ref().map(|goal| {
+            div()
+                .id("thread-goal")
+                .bg(theme::accent_soft())
+                .border_1()
+                .border_color(theme::border())
+                .rounded_lg()
+                .px_3()
+                .py_2()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_size(rems(0.72))
+                .child(div().text_color(theme::accent()).child("Goal"))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_color(theme::text())
+                        .child(goal.objective.clone()),
+                )
+                .child(
+                    div()
+                        .text_color(theme::text_faint())
+                        .child(if goal.status.is_empty() {
+                            "active".to_string()
+                        } else {
+                            goal.status.clone()
+                        }),
+                )
+        }))
         .children(
             task.entries
                 .iter()
@@ -1464,6 +1496,7 @@ fn entry_view(
             summary,
         } => div()
             .id(ElementId::Name(format!("entry-diff-{id}").into()))
+            .cursor_pointer()
             .bg(theme::bg_surface())
             .border_1()
             .border_color(theme::border())
@@ -1488,7 +1521,13 @@ fn entry_view(
                 div()
                     .text_color(theme::danger())
                     .child(format!("−{deletions}")),
-            ),
+            )
+            .on_click({
+                let path = path.clone();
+                window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                    this.copy_diff_path(path.clone(), cx);
+                })
+            }),
         Entry::Approval {
             id,
             title,
@@ -1502,7 +1541,8 @@ fn entry_view(
         } => {
             let requested = *requested;
             let approval_id = id.clone();
-            let interactive = approval_kind != "item/tool/call";
+            let interactive =
+                InteractionKind::from_method(approval_kind).can_render_decision_buttons();
             let allow_label = if approval_kind == "item/permissions/requestApproval" {
                 "Grant"
             } else if approval_kind == "mcpServer/elicitation/request" {
@@ -1777,6 +1817,27 @@ fn composer(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -
                             this.cycle_mode(cx)
                         }),
                     ))
+                    .child(text_button(
+                        "composer-sandbox",
+                        &format!("sandbox · {}", state.settings.sandbox_mode),
+                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                            this.cycle_sandbox_mode(cx)
+                        }),
+                    ))
+                    .child(text_button(
+                        "composer-approval",
+                        &format!("approval · {}", state.settings.approval_mode),
+                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                            this.cycle_approval_mode(cx)
+                        }),
+                    ))
+                    .child(text_button(
+                        "composer-tools",
+                        "tools",
+                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                            this.open_settings(SettingsPage::Apps, cx)
+                        }),
+                    ))
                     .child(div().flex_1().child(""))
                     .child(
                         div()
@@ -1945,7 +2006,51 @@ fn pull_requests_view(
     window: &mut Window,
     cx: &mut Context<AppState>,
 ) -> Stateful<Div> {
-    let mut cards = Vec::new();
+    let mut cards = vec![destination_card(
+        "github-status".into(),
+        if state.github.repository.is_empty() {
+            "GitHub pull request inbox".into()
+        } else {
+            state.github.repository.clone()
+        },
+        state.github.status.clone(),
+        Some((
+            "Refresh".into(),
+            Box::new(
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.refresh_pull_requests(cx);
+                }),
+            ),
+        )),
+    )];
+    for pull_request in &state.github.pull_requests {
+        let url = pull_request.url.clone();
+        cards.push(destination_card(
+            format!("github-pr-{}", pull_request.number),
+            format!("#{} {}", pull_request.number, pull_request.title),
+            format!(
+                "{} · {} · {} · {}",
+                pull_request.state,
+                pull_request.branch,
+                if pull_request.author.is_empty() {
+                    "unknown author"
+                } else {
+                    &pull_request.author
+                },
+                pull_request.checks
+            ),
+            (!url.is_empty()).then(|| {
+                (
+                    "Copy link".into(),
+                    Box::new(
+                        window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                            this.copy_link(url.clone(), cx);
+                        }),
+                    ) as Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
+                )
+            }),
+        ));
+    }
     for project in &state.workspace.projects {
         for task in &project.tasks {
             if task.archived || task.branch.is_none() {
@@ -2044,21 +2149,28 @@ fn scheduled_view(
 ) -> Stateful<Div> {
     let mut cards = state
         .workspace
-        .all_tasks()
-        .filter(|(_, task)| task.status == "scheduled" && !task.archived)
-        .map(|(project, task)| {
-            let project_id = project.id.clone();
-            let task_id = task.id.clone();
+        .automations
+        .iter()
+        .map(|automation| {
+            let automation_id = automation.id.clone();
+            let action_label = if automation.status == "active" {
+                "Pause"
+            } else {
+                "Resume"
+            };
             destination_card(
-                format!("scheduled-{}", task.id),
-                task.title.clone(),
-                format!("{} · next run {}", project.name, task.updated_at),
+                format!("scheduled-{}", automation.id),
+                automation.name.clone(),
+                format!(
+                    "{} · {} · next run {}",
+                    automation.schedule, automation.status, automation.next_run
+                ),
                 Some((
-                    "Open task".into(),
+                    action_label.into(),
                     Box::new(window.listener_for(
                         &cx.entity(),
                         move |this, _event, _window, cx| {
-                            this.select_task(project_id.clone(), task_id.clone(), cx);
+                            this.toggle_automation(automation_id.clone(), cx);
                         },
                     )),
                 )),
@@ -2070,15 +2182,28 @@ fn scheduled_view(
             "scheduled-empty",
             "No scheduled tasks",
             Some((
-                "Open settings".into(),
+                "Create automation".into(),
                 Box::new(
                     window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                        this.open_settings(SettingsPage::General, cx);
+                        this.create_automation(cx);
                     }),
                 ),
             )),
         ));
     }
+    cards.push(destination_card(
+        "scheduled-create".into(),
+        "Create from current task".into(),
+        "Save a local recurring prompt and attach it to the selected task".into(),
+        Some((
+            "Create".into(),
+            Box::new(
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.create_automation(cx);
+                }),
+            ),
+        )),
+    ));
     destination_view(
         "scheduled",
         "Scheduled",
