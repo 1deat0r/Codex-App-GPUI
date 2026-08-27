@@ -1353,6 +1353,436 @@ impl AppServerClient {
     pub fn plugin_uninstall(&self, plugin_id: &str) -> Result<Value> {
         self.request("plugin/uninstall", json!({ "pluginId": plugin_id }))
     }
+
+    pub fn server_diagnostics(&self) -> Result<Value> {
+        self.request("server/diagnostics", json!({}))
+    }
+
+    pub fn thread_increment_elicitation(&self, thread_id: &str) -> Result<Value> {
+        self.request(
+            "thread/increment_elicitation",
+            json!({ "threadId": thread_id }),
+        )
+    }
+
+    pub fn thread_decrement_elicitation(&self, thread_id: &str) -> Result<Value> {
+        self.request(
+            "thread/decrement_elicitation",
+            json!({ "threadId": thread_id }),
+        )
+    }
+
+    pub fn memory_reset(&self) -> Result<Value> {
+        self.request("memory/reset", Value::Null)
+    }
+
+    pub fn thread_approve_guardian_denied_action(
+        &self,
+        thread_id: &str,
+        event: Value,
+    ) -> Result<Value> {
+        self.request(
+            "thread/approveGuardianDeniedAction",
+            json!({ "event": event, "threadId": thread_id }),
+        )
+    }
+
+    pub fn thread_background_terminals_clean(&self, thread_id: &str) -> Result<Value> {
+        self.request(
+            "thread/backgroundTerminals/clean",
+            json!({ "threadId": thread_id }),
+        )
+    }
+
+    pub fn thread_background_terminals_list(
+        &self,
+        thread_id: &str,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Value> {
+        let mut params = json!({ "threadId": thread_id });
+        if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
+            params["cursor"] = Value::String(cursor.into());
+        }
+        if let Some(limit) = limit {
+            params["limit"] = json!(limit);
+        }
+        self.request("thread/backgroundTerminals/list", params)
+    }
+
+    pub fn thread_background_terminals_terminate(
+        &self,
+        thread_id: &str,
+        process_id: &str,
+    ) -> Result<Value> {
+        self.request(
+            "thread/backgroundTerminals/terminate",
+            json!({ "processId": process_id, "threadId": thread_id }),
+        )
+    }
+
+    pub fn thread_section_list(&self, cursor: Option<&str>, limit: Option<u32>) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
+            params["cursor"] = Value::String(cursor.into());
+        }
+        if let Some(limit) = limit {
+            params["limit"] = json!(limit);
+        }
+        self.request("threadSection/list", params)
+    }
+
+    pub fn thread_section_create(&self, name: &str, appearance: Option<Value>) -> Result<Value> {
+        let mut params = json!({ "name": name });
+        if let Some(appearance) = appearance {
+            params["appearance"] = appearance;
+        }
+        self.request("threadSection/create", params)
+    }
+
+    pub fn thread_section_update(
+        &self,
+        section_id: &str,
+        name: &str,
+        appearance: Option<Value>,
+    ) -> Result<Value> {
+        let mut params = json!({ "name": name, "sectionId": section_id });
+        if let Some(appearance) = appearance {
+            params["appearance"] = appearance;
+        }
+        self.request("threadSection/update", params)
+    }
+
+    pub fn thread_section_delete(&self, section_id: &str) -> Result<Value> {
+        self.request("threadSection/delete", json!({ "sectionId": section_id }))
+    }
+
+    pub fn thread_loaded_list(&self, cursor: Option<&str>, limit: Option<u32>) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
+            params["cursor"] = Value::String(cursor.into());
+        }
+        if let Some(limit) = limit {
+            params["limit"] = json!(limit);
+        }
+        self.request("thread/loaded/list", params)
+    }
+
+    pub fn hooks_list(&self, cwds: Option<&[String]>) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(cwds) = cwds {
+            params["cwds"] = json!(cwds);
+        }
+        self.request("hooks/list", params)
+    }
+
+    pub fn plugin_skill_read(
+        &self,
+        remote_marketplace_name: &str,
+        remote_plugin_id: &str,
+        skill_name: &str,
+    ) -> Result<Value> {
+        self.request(
+            "plugin/skill/read",
+            json!({
+                "remoteMarketplaceName": remote_marketplace_name,
+                "remotePluginId": remote_plugin_id,
+                "skillName": skill_name,
+            }),
+        )
+    }
+
+    pub fn plugin_share_save(&self, params: Value) -> Result<Value> {
+        self.request("plugin/share/save", params)
+    }
+
+    pub fn plugin_share_update_targets(&self, params: Value) -> Result<Value> {
+        self.request("plugin/share/updateTargets", params)
+    }
+
+    pub fn plugin_share_list(&self) -> Result<Value> {
+        self.request("plugin/share/list", json!({}))
+    }
+
+    pub fn plugin_share_checkout(&self, remote_plugin_id: &str) -> Result<Value> {
+        self.request(
+            "plugin/share/checkout",
+            json!({ "remotePluginId": remote_plugin_id }),
+        )
+    }
+
+    pub fn plugin_share_delete(&self, remote_plugin_id: &str) -> Result<Value> {
+        self.request(
+            "plugin/share/delete",
+            json!({ "remotePluginId": remote_plugin_id }),
+        )
+    }
+
+    pub fn fs_read_file(&self, path: &str) -> Result<Value> {
+        self.request("fs/readFile", json!({ "path": path }))
+    }
+
+    pub fn fs_write_file(&self, path: &str, data_base64: &str) -> Result<Value> {
+        self.request(
+            "fs/writeFile",
+            json!({ "dataBase64": data_base64, "path": path }),
+        )
+    }
+
+    pub fn fs_create_directory(&self, path: &str, recursive: bool) -> Result<Value> {
+        self.request(
+            "fs/createDirectory",
+            json!({ "path": path, "recursive": recursive }),
+        )
+    }
+
+    pub fn fs_get_metadata(&self, path: &str) -> Result<Value> {
+        self.request("fs/getMetadata", json!({ "path": path }))
+    }
+
+    pub fn fs_read_directory(&self, path: &str) -> Result<Value> {
+        self.request("fs/readDirectory", json!({ "path": path }))
+    }
+
+    pub fn fs_remove(&self, path: &str, recursive: bool, force: bool) -> Result<Value> {
+        self.request(
+            "fs/remove",
+            json!({ "force": force, "path": path, "recursive": recursive }),
+        )
+    }
+
+    pub fn fs_copy(
+        &self,
+        source_path: &str,
+        destination_path: &str,
+        recursive: Option<bool>,
+    ) -> Result<Value> {
+        let mut params = json!({ "destinationPath": destination_path, "sourcePath": source_path });
+        if let Some(recursive) = recursive {
+            params["recursive"] = Value::Bool(recursive);
+        }
+        self.request("fs/copy", params)
+    }
+
+    pub fn fs_watch(&self, path: &str, watch_id: &str) -> Result<Value> {
+        self.request("fs/watch", json!({ "path": path, "watchId": watch_id }))
+    }
+
+    pub fn fs_unwatch(&self, watch_id: &str) -> Result<Value> {
+        self.request("fs/unwatch", json!({ "watchId": watch_id }))
+    }
+
+    pub fn model_provider_capabilities_read(&self) -> Result<Value> {
+        self.request("modelProvider/capabilities/read", json!({}))
+    }
+
+    pub fn experimental_feature_list(
+        &self,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+        thread_id: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
+            params["cursor"] = Value::String(cursor.into());
+        }
+        if let Some(limit) = limit {
+            params["limit"] = json!(limit);
+        }
+        if let Some(thread_id) = thread_id.filter(|value| !value.is_empty()) {
+            params["threadId"] = Value::String(thread_id.into());
+        }
+        self.request("experimentalFeature/list", params)
+    }
+
+    pub fn experimental_feature_enablement_set(&self, enablement: Value) -> Result<Value> {
+        self.request(
+            "experimentalFeature/enablement/set",
+            json!({ "enablement": enablement }),
+        )
+    }
+
+    pub fn remote_control_enable(&self, params: Option<Value>) -> Result<Value> {
+        self.request("remoteControl/enable", params.unwrap_or(Value::Null))
+    }
+
+    pub fn remote_control_disable(&self, params: Option<Value>) -> Result<Value> {
+        self.request("remoteControl/disable", params.unwrap_or(Value::Null))
+    }
+
+    pub fn remote_control_status_read(&self) -> Result<Value> {
+        self.request("remoteControl/status/read", Value::Null)
+    }
+
+    pub fn remote_control_pairing_start(&self, manual_code: Option<bool>) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(manual_code) = manual_code {
+            params["manualCode"] = Value::Bool(manual_code);
+        }
+        self.request("remoteControl/pairing/start", params)
+    }
+
+    pub fn remote_control_pairing_status(
+        &self,
+        pairing_code: Option<&str>,
+        manual_pairing_code: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(pairing_code) = pairing_code.filter(|value| !value.is_empty()) {
+            params["pairingCode"] = Value::String(pairing_code.into());
+        }
+        if let Some(manual_pairing_code) = manual_pairing_code.filter(|value| !value.is_empty()) {
+            params["manualPairingCode"] = Value::String(manual_pairing_code.into());
+        }
+        self.request("remoteControl/pairing/status", params)
+    }
+
+    pub fn remote_control_client_list(
+        &self,
+        environment_id: &str,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+        order: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({ "environmentId": environment_id });
+        if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
+            params["cursor"] = Value::String(cursor.into());
+        }
+        if let Some(limit) = limit {
+            params["limit"] = json!(limit);
+        }
+        if let Some(order) = order.filter(|value| !value.is_empty()) {
+            params["order"] = Value::String(order.into());
+        }
+        self.request("remoteControl/client/list", params)
+    }
+
+    pub fn remote_control_client_revoke(
+        &self,
+        environment_id: &str,
+        client_id: &str,
+    ) -> Result<Value> {
+        self.request(
+            "remoteControl/client/revoke",
+            json!({ "clientId": client_id, "environmentId": environment_id }),
+        )
+    }
+
+    pub fn mock_experimental_method(&self, params: Value) -> Result<Value> {
+        self.request("mock/experimentalMethod", params)
+    }
+
+    pub fn environment_add(
+        &self,
+        environment_id: &str,
+        exec_server_url: &str,
+        connect_timeout_ms: Option<u64>,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "environmentId": environment_id,
+            "execServerUrl": exec_server_url,
+        });
+        if let Some(connect_timeout_ms) = connect_timeout_ms {
+            params["connectTimeoutMs"] = json!(connect_timeout_ms);
+        }
+        self.request("environment/add", params)
+    }
+
+    pub fn environment_info(&self, environment_id: &str) -> Result<Value> {
+        self.request(
+            "environment/info",
+            json!({ "environmentId": environment_id }),
+        )
+    }
+
+    pub fn environment_status(&self, environment_id: &str) -> Result<Value> {
+        self.request(
+            "environment/status",
+            json!({ "environmentId": environment_id }),
+        )
+    }
+
+    pub fn mcp_server_resource_read(&self, params: Value) -> Result<Value> {
+        self.request("mcpServer/resource/read", params)
+    }
+
+    pub fn windows_sandbox_setup_start(&self, mode: &str, cwd: Option<&str>) -> Result<Value> {
+        let mut params = json!({ "mode": mode });
+        if let Some(cwd) = cwd.filter(|value| !value.is_empty()) {
+            params["cwd"] = Value::String(cwd.into());
+        }
+        self.request("windowsSandbox/setupStart", params)
+    }
+
+    pub fn windows_sandbox_readiness(&self) -> Result<Value> {
+        self.request("windowsSandbox/readiness", json!({}))
+    }
+
+    pub fn account_bedrock_discover(&self, params: Value) -> Result<Value> {
+        self.request("account/bedrock/discover", params)
+    }
+
+    pub fn account_bedrock_setup(&self, params: Value) -> Result<Value> {
+        self.request("account/bedrock/setup", params)
+    }
+
+    pub fn account_rate_limit_reset_credit_consume(&self, idempotency_key: &str) -> Result<Value> {
+        self.request(
+            "account/rateLimitResetCredit/consume",
+            json!({ "idempotencyKey": idempotency_key }),
+        )
+    }
+
+    pub fn account_workspace_messages_read(&self) -> Result<Value> {
+        self.request("account/workspaceMessages/read", Value::Null)
+    }
+
+    pub fn account_send_add_credits_nudge_email(&self, credit_type: &str) -> Result<Value> {
+        self.request(
+            "account/sendAddCreditsNudgeEmail",
+            json!({ "creditType": credit_type }),
+        )
+    }
+
+    pub fn feedback_upload(&self, params: Value) -> Result<Value> {
+        self.request("feedback/upload", params)
+    }
+
+    pub fn external_agent_config_detect(&self, params: Value) -> Result<Value> {
+        self.request("externalAgentConfig/detect", params)
+    }
+
+    pub fn external_agent_config_import(&self, params: Value) -> Result<Value> {
+        self.request("externalAgentConfig/import", params)
+    }
+
+    pub fn external_agent_config_import_record_history(&self, params: Value) -> Result<Value> {
+        self.request("externalAgentConfig/import/recordHistory", params)
+    }
+
+    pub fn external_agent_config_import_read_histories(&self) -> Result<Value> {
+        self.request("externalAgentConfig/import/readHistories", Value::Null)
+    }
+
+    pub fn config_requirements_read(&self) -> Result<Value> {
+        self.request("configRequirements/read", Value::Null)
+    }
+
+    pub fn fuzzy_file_search(&self, params: Value) -> Result<Value> {
+        self.request("fuzzyFileSearch", params)
+    }
+
+    pub fn fuzzy_file_search_session_start(&self, params: Value) -> Result<Value> {
+        self.request("fuzzyFileSearch/sessionStart", params)
+    }
+
+    pub fn fuzzy_file_search_session_update(&self, params: Value) -> Result<Value> {
+        self.request("fuzzyFileSearch/sessionUpdate", params)
+    }
+
+    pub fn fuzzy_file_search_session_stop(&self, params: Value) -> Result<Value> {
+        self.request("fuzzyFileSearch/sessionStop", params)
+    }
 }
 
 impl Drop for AppServerClient {
@@ -1881,6 +2311,245 @@ mod tests {
         assert_eq!(requests[24]["params"]["deltaBase64"], "b2s=");
         assert_eq!(requests[27]["params"]["processHandle"], "handle-1");
         assert_eq!(requests[30]["params"]["size"]["cols"], 80);
+    }
+
+    #[test]
+    fn official_client_request_inventory_is_wire_complete() {
+        let input = (1..=61)
+            .map(|id| format!(r#"{{"id":{id},"result":{{}}}}"#))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let recorded = RecordingWriter::default();
+        let bytes = recorded.0.clone();
+        let client = AppServerClient::from_parts(Cursor::new(input.into_bytes()), recorded);
+        let roots = json!(["/tmp"]);
+        let strings = vec![String::from("/tmp")];
+
+        client.server_diagnostics().unwrap();
+        client.thread_increment_elicitation("thread-1").unwrap();
+        client.thread_decrement_elicitation("thread-1").unwrap();
+        client.memory_reset().unwrap();
+        client
+            .thread_approve_guardian_denied_action("thread-1", json!({ "reason": "fixture" }))
+            .unwrap();
+        client
+            .thread_background_terminals_clean("thread-1")
+            .unwrap();
+        client
+            .thread_background_terminals_list("thread-1", Some("cursor"), Some(10))
+            .unwrap();
+        client
+            .thread_background_terminals_terminate("thread-1", "process-1")
+            .unwrap();
+        client
+            .thread_section_list(Some("cursor"), Some(10))
+            .unwrap();
+        client
+            .thread_section_create("Section", Some(json!({ "color": "blue" })))
+            .unwrap();
+        client
+            .thread_section_update("section-1", "Renamed", Some(json!({ "color": "green" })))
+            .unwrap();
+        client.thread_section_delete("section-1").unwrap();
+        client.thread_loaded_list(Some("cursor"), Some(10)).unwrap();
+        client.hooks_list(Some(&strings)).unwrap();
+        client
+            .plugin_skill_read("marketplace", "plugin", "skill")
+            .unwrap();
+        client
+            .plugin_share_save(json!({ "pluginPath": "/tmp/plugin" }))
+            .unwrap();
+        client
+            .plugin_share_update_targets(json!({
+                "discoverability": "private",
+                "remotePluginId": "plugin",
+                "shareTargets": []
+            }))
+            .unwrap();
+        client.plugin_share_list().unwrap();
+        client.plugin_share_checkout("plugin").unwrap();
+        client.plugin_share_delete("plugin").unwrap();
+        client.fs_read_file("/tmp/file").unwrap();
+        client.fs_write_file("/tmp/file", "Zm9v").unwrap();
+        client.fs_create_directory("/tmp/dir", true).unwrap();
+        client.fs_get_metadata("/tmp/file").unwrap();
+        client.fs_read_directory("/tmp").unwrap();
+        client.fs_remove("/tmp/file", false, true).unwrap();
+        client.fs_copy("/tmp/a", "/tmp/b", Some(true)).unwrap();
+        client.fs_watch("/tmp", "watch-1").unwrap();
+        client.fs_unwatch("watch-1").unwrap();
+        client.model_provider_capabilities_read().unwrap();
+        client
+            .experimental_feature_list(Some("cursor"), Some(10), Some("thread-1"))
+            .unwrap();
+        client
+            .experimental_feature_enablement_set(json!({ "feature": true }))
+            .unwrap();
+        client
+            .remote_control_enable(Some(json!({ "ephemeral": true })))
+            .unwrap();
+        client
+            .remote_control_disable(Some(json!({ "ephemeral": false })))
+            .unwrap();
+        client.remote_control_status_read().unwrap();
+        client.remote_control_pairing_start(Some(true)).unwrap();
+        client
+            .remote_control_pairing_status(Some("pairing"), Some("manual"))
+            .unwrap();
+        client
+            .remote_control_client_list("environment", Some("cursor"), Some(10), Some("asc"))
+            .unwrap();
+        client
+            .remote_control_client_revoke("environment", "client")
+            .unwrap();
+        client
+            .mock_experimental_method(json!({ "value": "fixture" }))
+            .unwrap();
+        client
+            .environment_add("environment", "https://example.invalid", Some(5000))
+            .unwrap();
+        client.environment_info("environment").unwrap();
+        client.environment_status("environment").unwrap();
+        client
+            .mcp_server_resource_read(json!({ "server": "fixture", "uri": "resource://fixture" }))
+            .unwrap();
+        client
+            .windows_sandbox_setup_start("elevated", Some("/tmp"))
+            .unwrap();
+        client.windows_sandbox_readiness().unwrap();
+        client.account_bedrock_discover(json!({})).unwrap();
+        client.account_bedrock_setup(json!({})).unwrap();
+        client
+            .account_rate_limit_reset_credit_consume("idempotency")
+            .unwrap();
+        client.account_workspace_messages_read().unwrap();
+        client
+            .account_send_add_credits_nudge_email("codex")
+            .unwrap();
+        client
+            .feedback_upload(json!({ "classification": "bug" }))
+            .unwrap();
+        client
+            .external_agent_config_detect(json!({ "cwds": strings }))
+            .unwrap();
+        client
+            .external_agent_config_import(json!({ "migrationItems": [] }))
+            .unwrap();
+        client
+            .external_agent_config_import_record_history(json!({
+                "itemTypeResults": {},
+                "providerId": "fixture"
+            }))
+            .unwrap();
+        client
+            .external_agent_config_import_read_histories()
+            .unwrap();
+        client.config_requirements_read().unwrap();
+        client
+            .fuzzy_file_search(json!({ "query": "needle", "roots": roots }))
+            .unwrap();
+        client
+            .fuzzy_file_search_session_start(json!({ "roots": ["/tmp"], "sessionId": "session" }))
+            .unwrap();
+        client
+            .fuzzy_file_search_session_update(json!({
+                "query": "needle",
+                "sessionId": "session"
+            }))
+            .unwrap();
+        client
+            .fuzzy_file_search_session_stop(json!({ "sessionId": "session" }))
+            .unwrap();
+
+        let requests = String::from_utf8(bytes.lock().unwrap().clone())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let expected = [
+            "server/diagnostics",
+            "thread/increment_elicitation",
+            "thread/decrement_elicitation",
+            "memory/reset",
+            "thread/approveGuardianDeniedAction",
+            "thread/backgroundTerminals/clean",
+            "thread/backgroundTerminals/list",
+            "thread/backgroundTerminals/terminate",
+            "threadSection/list",
+            "threadSection/create",
+            "threadSection/update",
+            "threadSection/delete",
+            "thread/loaded/list",
+            "hooks/list",
+            "plugin/skill/read",
+            "plugin/share/save",
+            "plugin/share/updateTargets",
+            "plugin/share/list",
+            "plugin/share/checkout",
+            "plugin/share/delete",
+            "fs/readFile",
+            "fs/writeFile",
+            "fs/createDirectory",
+            "fs/getMetadata",
+            "fs/readDirectory",
+            "fs/remove",
+            "fs/copy",
+            "fs/watch",
+            "fs/unwatch",
+            "modelProvider/capabilities/read",
+            "experimentalFeature/list",
+            "experimentalFeature/enablement/set",
+            "remoteControl/enable",
+            "remoteControl/disable",
+            "remoteControl/status/read",
+            "remoteControl/pairing/start",
+            "remoteControl/pairing/status",
+            "remoteControl/client/list",
+            "remoteControl/client/revoke",
+            "mock/experimentalMethod",
+            "environment/add",
+            "environment/info",
+            "environment/status",
+            "mcpServer/resource/read",
+            "windowsSandbox/setupStart",
+            "windowsSandbox/readiness",
+            "account/bedrock/discover",
+            "account/bedrock/setup",
+            "account/rateLimitResetCredit/consume",
+            "account/workspaceMessages/read",
+            "account/sendAddCreditsNudgeEmail",
+            "feedback/upload",
+            "externalAgentConfig/detect",
+            "externalAgentConfig/import",
+            "externalAgentConfig/import/recordHistory",
+            "externalAgentConfig/import/readHistories",
+            "configRequirements/read",
+            "fuzzyFileSearch",
+            "fuzzyFileSearch/sessionStart",
+            "fuzzyFileSearch/sessionUpdate",
+            "fuzzyFileSearch/sessionStop",
+        ];
+        assert_eq!(requests.len(), expected.len());
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request["method"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(requests[4]["params"]["threadId"], "thread-1");
+        assert_eq!(requests[4]["params"]["event"]["reason"], "fixture");
+        assert_eq!(requests[10]["params"]["sectionId"], "section-1");
+        assert_eq!(requests[14]["params"]["skillName"], "skill");
+        assert_eq!(requests[21]["params"]["dataBase64"], "Zm9v");
+        assert_eq!(requests[25]["params"]["force"], true);
+        assert_eq!(requests[31]["params"]["enablement"]["feature"], true);
+        assert_eq!(requests[40]["params"]["environmentId"], "environment");
+        assert_eq!(requests[44]["params"]["mode"], "elevated");
+        assert_eq!(requests[48]["params"]["idempotencyKey"], "idempotency");
+        assert_eq!(requests[53]["params"]["migrationItems"], json!([]));
+        assert_eq!(requests[57]["params"]["query"], "needle");
     }
 
     #[test]
