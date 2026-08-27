@@ -1537,6 +1537,18 @@ impl AppState {
         self.notify_success(&format!("Automation {status}"), cx);
     }
 
+    pub fn delete_automation(&mut self, automation_id: String, cx: &mut Context<Self>) {
+        let before = self.workspace.automations.len();
+        self.workspace
+            .automations
+            .retain(|automation| automation.id != automation_id);
+        if self.workspace.automations.len() == before {
+            return;
+        }
+        self.persist(cx);
+        self.notify_success("Automation deleted", cx);
+    }
+
     pub fn run_automation(&mut self, automation_id: String, cx: &mut Context<Self>) {
         let task_id = self
             .workspace
@@ -2268,6 +2280,39 @@ impl AppState {
         self.notify_success("Path copied", cx);
     }
 
+    pub fn uninstall_plugin(&mut self, plugin_id: String, cx: &mut Context<Self>) {
+        if self.connection != ConnectionState::Live {
+            let before = self.catalog.plugins.len();
+            self.catalog.plugins.retain(|plugin| plugin != &plugin_id);
+            if self.catalog.plugins.len() != before {
+                self.notify_success("Plugin removed from the local catalog", cx);
+            }
+            return;
+        }
+        let Some(client) = self.live_client.clone() else {
+            return;
+        };
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || client.plugin_uninstall(&plugin_id)).await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(_) => {
+                        this.refresh_catalog(cx);
+                        this.notify_success("Plugin uninstalled", cx);
+                    }
+                    Err(error) => this.fail(&format!("Plugin uninstall failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
     pub fn steer_current(&mut self, cx: &mut Context<Self>) {
         if !self.streaming {
             return;
@@ -2501,12 +2546,15 @@ impl AppState {
         );
     }
 
-    pub fn reset_view(&mut self, cx: &mut Context<Self>) {
+    pub fn reset_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_collapsed = false;
         self.content_layout = "Chat".into();
         self.bottom_panel_open = false;
         self.side_panel_open = false;
-        self.fullscreen = false;
+        if self.fullscreen {
+            self.fullscreen = false;
+            window.toggle_fullscreen();
+        }
         self.view_open = false;
         self.persist(cx);
         self.notify_success("View reset", cx);
@@ -2662,7 +2710,29 @@ impl AppState {
 
     pub fn fork_current(&mut self, cx: &mut Context<Self>) {
         if self.connection != ConnectionState::Live || self.selected_project != "live-codex" {
-            self.notify_success("Fork is available for live Codex tasks", cx);
+            let Some(project) = self.current_project().cloned() else {
+                return;
+            };
+            let Some(source) = self.current_task().cloned() else {
+                return;
+            };
+            let id = format!("fork-{}", self.workspace.all_tasks().count() + 1);
+            let mut fork = source;
+            fork.id = id.clone();
+            fork.title = format!("Fork of {}", fork.title);
+            fork.status = "idle".into();
+            fork.updated_at = "Now".into();
+            fork.pinned = false;
+            if let Some(project) = self
+                .workspace
+                .projects
+                .iter_mut()
+                .find(|candidate| candidate.id == project.id)
+            {
+                project.tasks.insert(0, fork);
+            }
+            self.select_task(project.id, id, cx);
+            self.notify_success("Task forked in this workspace", cx);
             return;
         }
         let Some(client) = self.live_client.clone() else {

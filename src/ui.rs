@@ -1091,8 +1091,8 @@ fn view_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) 
         .child(menu_action(
             "view-reset",
             "Reset view",
-            window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                this.reset_view(cx);
+            window.listener_for(&cx.entity(), |this, _event, window, cx| {
+                this.reset_view(window, cx);
             }),
         ))
 }
@@ -2396,11 +2396,13 @@ fn pull_requests_view(
             }),
         ));
     }
+    let mut has_task_branches = false;
     for project in &state.workspace.projects {
         for task in &project.tasks {
             if task.archived || task.branch.is_none() {
                 continue;
             }
+            has_task_branches = true;
             let project_id = project.id.clone();
             let task_id = task.id.clone();
             let title = task.title.clone();
@@ -2421,7 +2423,7 @@ fn pull_requests_view(
             ));
         }
     }
-    if cards.is_empty() {
+    if state.github.pull_requests.is_empty() && !has_task_branches {
         cards.push(empty_destination_card(
             "pr-empty",
             "No pull requests need attention",
@@ -2498,8 +2500,9 @@ fn scheduled_view(
         .iter()
         .map(|automation| {
             let automation_id = automation.id.clone();
+            let automation_status = automation.status.clone();
             let action_label = if automation.status == "active" {
-                "Pause"
+                "Run now"
             } else {
                 "Resume"
             };
@@ -2515,7 +2518,11 @@ fn scheduled_view(
                     Box::new(window.listener_for(
                         &cx.entity(),
                         move |this, _event, _window, cx| {
-                            this.toggle_automation(automation_id.clone(), cx);
+                            if automation_status == "active" {
+                                this.run_automation(automation_id.clone(), cx);
+                            } else {
+                                this.toggle_automation(automation_id.clone(), cx);
+                            }
                         },
                     )),
                 )),
@@ -2567,17 +2574,19 @@ fn plugins_view(
         .plugins
         .iter()
         .map(|plugin| {
+            let plugin_id = plugin.clone();
             destination_card(
                 format!("plugin-{}", plugin),
                 plugin.clone(),
                 "Installed by the local app-server".into(),
                 Some((
-                    "Manage".into(),
-                    Box::new(
-                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                            this.open_settings(SettingsPage::Plugins, cx);
-                        }),
-                    ),
+                    "Uninstall".into(),
+                    Box::new(window.listener_for(
+                        &cx.entity(),
+                        move |this, _event, _window, cx| {
+                            this.uninstall_plugin(plugin_id.clone(), cx);
+                        },
+                    )),
                 )),
             )
         })
