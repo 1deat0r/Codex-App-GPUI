@@ -236,7 +236,11 @@ mod tests {
         original.settings.language = "English".into();
         original.settings.worktree_auto_cleanup = true;
         original.settings.worktree_keep_count = 20;
+        original.settings.custom_instructions = "Prefer concise evidence".into();
+        original.settings.commit_instructions = "Run the full suite".into();
         original.settings.pull_request_instructions = "Run the checks".into();
+        original.settings.pull_request_watch_instructions = "Fix failing checks".into();
+        original.settings.projectless_task_folder = "/tmp/projectless".into();
         save_to(&path, &original).unwrap();
         let restored = load_from(&path).unwrap().unwrap();
         assert_eq!(restored, original);

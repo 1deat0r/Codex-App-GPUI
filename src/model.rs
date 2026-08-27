@@ -835,6 +835,14 @@ mod tests {
         assert!(settings.queue_follow_ups);
         assert!(settings.voice_enabled);
         assert!(!settings.computer_use_enabled);
+        assert!(settings.git_review_enabled);
+        assert_eq!(settings.merge_method, "squash");
+        assert_eq!(settings.review_delivery, "inline");
+        assert!(settings.custom_instructions.is_empty());
+        assert!(settings.commit_instructions.is_empty());
+        assert!(settings.pull_request_instructions.is_empty());
+        assert!(settings.pull_request_watch_instructions.is_empty());
+        assert!(settings.projectless_task_folder.is_empty());
     }
 
     #[test]

@@ -2690,6 +2690,38 @@ impl AppState {
         .detach();
     }
 
+    pub fn pick_projectless_task_folder(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose projectless task folder".into()),
+        });
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = receiver.await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(Ok(Some(paths))) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            this.settings.projectless_task_folder = path.display().to_string();
+                            this.persist(cx);
+                            this.notify_success("Projectless task folder updated", cx);
+                        }
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(error)) => {
+                        this.fail(&format!("Projectless folder picker failed: {error}"), cx)
+                    }
+                    Err(error) => {
+                        this.fail(&format!("Projectless folder picker cancelled: {error}"), cx)
+                    }
+                });
+            },
+        )
+        .detach();
+    }
+
     pub fn pick_skill_root(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -2942,6 +2974,28 @@ impl AppState {
     pub fn copy_diff_path(&mut self, path: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(path));
         self.notify_success("Path copied", cx);
+    }
+
+    pub fn open_diff_path(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(task) = self.current_task() else {
+            self.fail("Select a task before opening a diff path", cx);
+            return;
+        };
+        let resolved = match resolve_open_path(&task.path, &path) {
+            Ok(path) => path,
+            Err(error) => {
+                self.fail(&format!("Cannot open diff path: {error}"), cx);
+                return;
+            }
+        };
+        if let Err(error) = Command::new("xdg-open").arg(&resolved).spawn() {
+            self.fail(
+                &format!("Could not open {}: {error}", resolved.display()),
+                cx,
+            );
+            return;
+        }
+        self.notify_success(&format!("Opened {}", resolved.display()), cx);
     }
 
     pub fn uninstall_plugin(&mut self, plugin_id: String, cx: &mut Context<Self>) {
@@ -4583,6 +4637,30 @@ fn valid_mcp_server_name(name: &str) -> bool {
         && name.chars().all(|character| {
             character.is_ascii_alphanumeric() || character == '-' || character == '_'
         })
+}
+
+fn resolve_open_path(root: &str, requested: &str) -> anyhow::Result<PathBuf> {
+    let root = Path::new(root)
+        .canonicalize()
+        .map_err(|error| anyhow::anyhow!("task directory is unavailable: {error}"))?;
+    let requested = requested.trim();
+    let candidate = if requested.is_empty() || requested == "Working tree" {
+        root.clone()
+    } else {
+        let requested_path = Path::new(requested);
+        if requested_path.is_absolute() {
+            requested_path.to_path_buf()
+        } else {
+            root.join(requested_path)
+        }
+    };
+    let candidate = candidate
+        .canonicalize()
+        .map_err(|error| anyhow::anyhow!("path does not exist: {error}"))?;
+    if candidate != root && !candidate.starts_with(&root) {
+        return Err(anyhow::anyhow!("path is outside the task directory"));
+    }
+    Ok(candidate)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -6487,5 +6565,42 @@ mod tests {
             1
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diff_path_resolution_is_contained_by_the_task_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-app-gpui-open-path-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        assert_eq!(
+            resolve_open_path(root.to_str().unwrap(), "src/main.rs").unwrap(),
+            root.join("src/main.rs").canonicalize().unwrap()
+        );
+        assert_eq!(
+            resolve_open_path(root.to_str().unwrap(), "Working tree").unwrap(),
+            root.canonicalize().unwrap()
+        );
+        assert!(resolve_open_path(root.to_str().unwrap(), "../outside").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mcp_server_names_accept_only_safe_wire_keys() {
+        for name in ["filesystem", "my-server_2", "A1"] {
+            assert!(valid_mcp_server_name(name), "expected valid name: {name}");
+        }
+        for name in ["", "my server", "../server", "server.name", "mcp/one", "é"] {
+            assert!(
+                !valid_mcp_server_name(name),
+                "expected invalid name: {name}"
+            );
+        }
     }
 }

@@ -1875,40 +1875,57 @@ fn entry_view(
             additions,
             deletions,
             summary,
-        } => div()
-            .id(ElementId::Name(format!("entry-diff-{id}").into()))
-            .cursor_pointer()
-            .bg(theme::bg_surface())
-            .border_1()
-            .border_color(theme::border())
-            .rounded_lg()
-            .px_3()
-            .py_2()
-            .text_size(rems(0.76))
-            .child(div().text_color(theme::text()).child(path.clone()))
-            .child(
-                div()
-                    .mt_1()
-                    .text_color(theme::text_muted())
-                    .child(summary.clone()),
-            )
-            .child(
-                div()
-                    .mt_2()
-                    .text_color(theme::success())
-                    .child(format!("+{additions}")),
-            )
-            .child(
-                div()
-                    .text_color(theme::danger())
-                    .child(format!("−{deletions}")),
-            )
-            .on_click({
-                let path = path.clone();
-                window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
-                    this.copy_diff_path(path.clone(), cx);
-                })
-            }),
+        } => {
+            let open_path = path.clone();
+            let copy_path = path.clone();
+            div()
+                .id(ElementId::Name(format!("entry-diff-{id}").into()))
+                .bg(theme::bg_surface())
+                .border_1()
+                .border_color(theme::border())
+                .rounded_lg()
+                .px_3()
+                .py_2()
+                .text_size(rems(0.76))
+                .child(div().text_color(theme::text()).child(path.clone()))
+                .child(
+                    div()
+                        .mt_1()
+                        .text_color(theme::text_muted())
+                        .child(summary.clone()),
+                )
+                .child(
+                    div()
+                        .mt_2()
+                        .text_color(theme::success())
+                        .child(format!("+{additions}")),
+                )
+                .child(
+                    div()
+                        .text_color(theme::danger())
+                        .child(format!("−{deletions}")),
+                )
+                .child(
+                    div()
+                        .mt_2()
+                        .flex()
+                        .gap_1()
+                        .child(text_button(
+                            ElementId::Name(format!("entry-diff-open-{id}").into()),
+                            "Open",
+                            window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                                this.open_diff_path(open_path.clone(), cx);
+                            }),
+                        ))
+                        .child(text_button(
+                            ElementId::Name(format!("entry-diff-copy-{id}").into()),
+                            "Copy path",
+                            window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                                this.copy_diff_path(copy_path.clone(), cx);
+                            }),
+                        )),
+                )
+        }
         Entry::Approval {
             id,
             title,
@@ -3115,7 +3132,7 @@ fn settings_page_body(
                 )),
             ))
             .child(setting_toggle(
-                "Reduced motion",
+                "Reduce motion",
                 "Reduce animated transitions and progress effects",
                 state.settings.reduced_motion,
                 "reduced-motion",
@@ -3186,7 +3203,12 @@ fn settings_page_body(
                 } else {
                     format!("{} app-backed surface(s)", state.catalog.apps.len())
                 },
-                None,
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.set_route(Route::Sites, cx);
+                    },
+                ))),
             ))
             .child(setting_row(
                 "Refresh catalog",
@@ -3652,7 +3674,12 @@ fn extended_settings_page(
                 } else {
                     state.settings.projectless_task_folder.clone()
                 },
-                None,
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.pick_projectless_task_folder(cx);
+                    },
+                ))),
             )),
         SettingsPage::Pets => div()
             .flex()
@@ -3890,10 +3917,10 @@ fn extended_settings_page(
             .flex_col()
             .gap_2()
             .child(setting_toggle(
-                "Git-based review",
-                "Enable review actions for the current repository",
-                state.settings.git_review_enabled,
-                "git-review",
+                "Disable Git-Based Review",
+                "Only show the last turn in Review and avoid Git operations",
+                !state.settings.git_review_enabled,
+                "git-review-disabled",
                 state,
                 window,
                 cx,

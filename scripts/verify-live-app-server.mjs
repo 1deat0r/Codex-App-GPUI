@@ -52,7 +52,7 @@ try {
   child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
   const listed = await send("thread/list", { limit: 10, archived: false });
   if (!initialized || !listed || !Array.isArray(listed.data)) throw new Error("unexpected app-server response shape");
-  const [models, permissions, modes, apps, installed, plugins, skills, mcp, account, config] = await Promise.all([
+  const [models, permissions, modes, apps, installed, plugins, skills, mcp, account, config, hooks] = await Promise.all([
     send("model/list", { limit: 10 }),
     send("permissionProfile/list", { cwd: stateHome, limit: 10 }),
     send("collaborationMode/list"),
@@ -63,12 +63,17 @@ try {
     send("mcpServerStatus/list"),
     send("account/read"),
     send("config/read", { cwd: stateHome, includeLayers: false }),
+    send("hooks/list", { cwds: [stateHome] }),
   ]);
   if (!Array.isArray(models?.data) || !Array.isArray(permissions?.data) || !Array.isArray(modes?.data)) {
     throw new Error("catalog responses were not arrays");
   }
-  if (!Array.isArray(apps?.data) || !Array.isArray(installed?.apps) || !plugins || !skills?.data || !mcp?.data || !account || !config?.config) {
+  if (!Array.isArray(apps?.data) || !Array.isArray(installed?.apps) || !plugins || !skills?.data || !mcp?.data || !account || !config?.config || !Array.isArray(hooks?.data)) {
     throw new Error("secondary app-server catalog response shape was incomplete");
+  }
+  if (apps.data.length > 0) {
+    const details = await send("app/read", { appIds: [apps.data[0].id], includeTools: true });
+    if (!Array.isArray(details?.apps)) throw new Error("app/read did not return apps");
   }
   const started = await send("thread/start", { cwd: stateHome });
   const threadId = started?.thread?.id;
