@@ -144,6 +144,155 @@ impl ConnectionState {
     }
 }
 
+/// The app-server has several server-initiated interaction contracts. Keeping
+/// the request kind and original params together prevents the UI from sending
+/// a command-approval payload for a permissions or MCP request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractionKind {
+    CommandApproval,
+    FileChangeApproval,
+    PermissionsApproval,
+    UserInput,
+    McpElicitation,
+    LegacyCommandApproval,
+    LegacyPatchApproval,
+    DynamicToolCall,
+    Unknown,
+}
+
+impl InteractionKind {
+    pub fn from_method(method: &str) -> Self {
+        match method {
+            "item/commandExecution/requestApproval" => Self::CommandApproval,
+            "item/fileChange/requestApproval" => Self::FileChangeApproval,
+            "item/permissions/requestApproval" => Self::PermissionsApproval,
+            "item/tool/requestUserInput" => Self::UserInput,
+            "mcpServer/elicitation/request" => Self::McpElicitation,
+            "execCommandApproval" => Self::LegacyCommandApproval,
+            "applyPatchApproval" => Self::LegacyPatchApproval,
+            "item/tool/call" => Self::DynamicToolCall,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::CommandApproval | Self::LegacyCommandApproval => "Run command",
+            Self::FileChangeApproval | Self::LegacyPatchApproval => "Apply file changes",
+            Self::PermissionsApproval => "Grant additional permissions",
+            Self::UserInput => "Codex needs input",
+            Self::McpElicitation => "MCP server needs input",
+            Self::DynamicToolCall => "Dynamic tool call",
+            Self::Unknown => "Codex request",
+        }
+    }
+
+    fn can_render_decision_buttons(self) -> bool {
+        !matches!(self, Self::DynamicToolCall | Self::Unknown)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingInteraction {
+    pub request_id: Value,
+    pub method: String,
+    pub kind: InteractionKind,
+    pub thread_id: String,
+    pub item_id: String,
+    pub title: String,
+    pub detail: String,
+    pub choices: Vec<String>,
+    pub params: Value,
+}
+
+impl PendingInteraction {
+    fn from_event(event: &Value, params: &Value, method: &str) -> Self {
+        let kind = InteractionKind::from_method(method);
+        let thread_id = event_thread_id(params)
+            .map(str::to_owned)
+            .unwrap_or_default();
+        let item_id = string_field(params, &["itemId", "callId", "approvalId"]);
+        let choices = params
+            .get("availableDecisions")
+            .and_then(Value::as_array)
+            .map(|values| values.iter().map(value_text).collect())
+            .unwrap_or_default();
+        let detail = match kind {
+            InteractionKind::UserInput => {
+                params.get("questions").map(value_text).unwrap_or_default()
+            }
+            InteractionKind::McpElicitation => {
+                let message = string_field(params, &["message", "serverName"]);
+                let mode = string_field(params, &["mode"]);
+                [message, mode]
+                    .into_iter()
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            }
+            _ => string_field(
+                params,
+                &[
+                    "command",
+                    "fileChanges",
+                    "permissions",
+                    "reason",
+                    "message",
+                    "tool",
+                ],
+            ),
+        };
+        Self {
+            request_id: event.get("id").cloned().unwrap_or(Value::Null),
+            method: method.into(),
+            kind,
+            thread_id,
+            item_id,
+            title: kind.title().into(),
+            detail,
+            choices,
+            params: params.clone(),
+        }
+    }
+
+    pub fn response(&self, approved: bool) -> Value {
+        match self.kind {
+            InteractionKind::CommandApproval => json!({
+                "decision": if approved { "accept" } else { "decline" }
+            }),
+            InteractionKind::FileChangeApproval => json!({
+                "decision": if approved { "accept" } else { "decline" }
+            }),
+            InteractionKind::PermissionsApproval => {
+                if approved {
+                    json!({
+                        "permissions": self.params.get("permissions").cloned().unwrap_or_else(|| json!({})),
+                        "scope": "turn",
+                    })
+                } else {
+                    json!({ "permissions": {}, "scope": "turn" })
+                }
+            }
+            InteractionKind::UserInput => json!({ "answers": {} }),
+            InteractionKind::McpElicitation => json!({
+                "action": if approved { "accept" } else { "cancel" }
+            }),
+            InteractionKind::LegacyCommandApproval | InteractionKind::LegacyPatchApproval => {
+                if approved {
+                    json!({ "decision": "approved" })
+                } else {
+                    json!({ "decision": { "denied": { "rejection": "Declined by user" } } })
+                }
+            }
+            InteractionKind::DynamicToolCall => json!({
+                "success": false,
+                "contentItems": [],
+            }),
+            InteractionKind::Unknown => safe_server_request_response(&self.method),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMenu {
     File,
@@ -179,7 +328,7 @@ pub struct AppState {
     pub catalog: ServerCatalog,
     pub voice_active: bool,
     pub active_turn_id: Option<String>,
-    pub pending_approval_id: Option<Value>,
+    pub pending_interaction: Option<PendingInteraction>,
     pub rename_open: bool,
     pub rename_draft: String,
     pub rename_caret: usize,
@@ -221,7 +370,7 @@ impl AppState {
             catalog: ServerCatalog::default(),
             voice_active: false,
             active_turn_id: None,
-            pending_approval_id: None,
+            pending_interaction: None,
             rename_open: false,
             rename_draft: String::new(),
             rename_caret: 0,
@@ -500,7 +649,7 @@ impl AppState {
                 if thread_id == Some(self.selected_task.as_str()) {
                     self.streaming = false;
                     self.active_turn_id = None;
-                    self.pending_approval_id = None;
+                    self.pending_interaction = None;
                     if let Some(task) = self.current_task_mut() {
                         for entry in &mut task.entries {
                             if let Entry::Approval { requested, .. } = entry {
@@ -805,13 +954,21 @@ impl AppState {
             "item/commandExecution/requestApproval"
             | "item/fileChange/requestApproval"
             | "item/permissions/requestApproval"
-            | "item/tool/requestUserInput" => {
+            | "item/tool/requestUserInput"
+            | "mcpServer/elicitation/request"
+            | "execCommandApproval"
+            | "applyPatchApproval"
+            | "item/tool/call" => {
                 self.add_approval_request(&event, &params, method);
                 persist = true;
             }
             "serverRequest/resolved" => {
-                if params.get("requestId") == self.pending_approval_id.as_ref() {
-                    self.pending_approval_id = None;
+                if self
+                    .pending_interaction
+                    .as_ref()
+                    .is_some_and(|pending| params.get("requestId") == Some(&pending.request_id))
+                {
+                    self.pending_interaction = None;
                     if let Some(task) = self.current_task_mut() {
                         for entry in &mut task.entries {
                             if let Entry::Approval { requested, .. } = entry {
@@ -838,7 +995,7 @@ impl AppState {
                             let _ = client.respond(request_id, json!({ "currentTimeAt": now }));
                         }
                     } else if let Some(client) = self.live_client.clone() {
-                        let _ = client.respond(request_id, json!({ "decision": "decline" }));
+                        let _ = client.respond(request_id, safe_server_request_response(method));
                     }
                 }
             }
@@ -856,30 +1013,26 @@ impl AppState {
     }
 
     fn add_approval_request(&mut self, event: &Value, params: &Value, method: &str) {
-        self.pending_approval_id = event.get("id").cloned();
-        let thread_id = event_thread_id(params)
-            .map(str::to_owned)
+        let pending = PendingInteraction::from_event(event, params, method);
+        let thread_id = (!pending.thread_id.is_empty())
+            .then(|| pending.thread_id.clone())
             .unwrap_or_else(|| self.selected_task.clone());
-        let item_id = params
-            .get("itemId")
-            .and_then(Value::as_str)
-            .unwrap_or("approval");
+        self.pending_interaction = Some(pending.clone());
+        let thread_id = thread_id;
         let entry = Entry::Approval {
-            id: item_id.into(),
-            title: if method.contains("fileChange") {
-                "Apply file changes"
-            } else if method.contains("permissions") {
-                "Grant additional permissions"
-            } else if method.contains("requestUserInput") {
-                "Codex needs input"
+            id: if pending.item_id.is_empty() {
+                format!("request-{}", value_text(&pending.request_id))
             } else {
-                "Run command"
-            }
-            .into(),
+                pending.item_id.clone()
+            },
+            title: pending.title.clone(),
             command: string_field(params, &["command", "questions", "message", "toolName"]),
             cwd: string_field(params, &["cwd", "environmentId"]),
             reason: string_field(params, &["reason", "message"]),
             requested: true,
+            approval_kind: format!("{method}"),
+            choices: pending.choices.clone(),
+            request_details: pending.detail.clone(),
         };
         if let Some(task) = self.task_mut_by_id(&thread_id) {
             upsert_entry(task, entry);
@@ -1897,6 +2050,7 @@ impl AppState {
     }
 
     pub fn approve_current(&mut self, approved: bool, cx: &mut Context<Self>) {
+        let pending = self.pending_interaction.take();
         if let Some(task) = self.current_task_mut() {
             let label = if approved { "Approved" } else { "Declined" };
             for entry in &mut task.entries {
@@ -1909,13 +2063,9 @@ impl AppState {
                 text: format!("{label} by user"),
             });
         }
-        if let (Some(client), Some(request_id)) =
-            (self.live_client.clone(), self.pending_approval_id.take())
-        {
-            if let Err(error) = client.respond(
-                request_id,
-                json!({ "decision": if approved { "accept" } else { "decline" } }),
-            ) {
+        if let (Some(client), Some(pending)) = (self.live_client.clone(), pending) {
+            let response = pending.response(approved);
+            if let Err(error) = client.respond(pending.request_id, response) {
                 self.fail(&format!("Approval response failed: {error}"), cx);
             }
         }
@@ -2100,8 +2250,8 @@ impl AppState {
                 self.open_settings(SettingsPage::General, cx);
                 window.focus(&self.root_focus);
             }
-            (true, "a") if self.pending_approval_id.is_some() => self.approve_current(true, cx),
-            (true, "d") if self.pending_approval_id.is_some() => self.approve_current(false, cx),
+            (true, "a") if self.pending_interaction.is_some() => self.approve_current(true, cx),
+            (true, "d") if self.pending_interaction.is_some() => self.approve_current(false, cx),
             (true, "b") => self.toggle_sidebar(cx),
             (true, "e") => self.add_attachment(cx),
             (true, "f") => self.insert_mention(cx),
@@ -2615,6 +2765,24 @@ fn string_field(value: &Value, names: &[&str]) -> String {
         .iter()
         .find_map(|name| value.get(*name).map(value_text))
         .unwrap_or_default()
+}
+
+fn safe_server_request_response(method: &str) -> Value {
+    match method {
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            json!({ "decision": "decline" })
+        }
+        "item/permissions/requestApproval" => {
+            json!({ "permissions": {}, "scope": "turn" })
+        }
+        "item/tool/requestUserInput" => json!({ "answers": {} }),
+        "mcpServer/elicitation/request" => json!({ "action": "cancel" }),
+        "item/tool/call" => json!({ "success": false, "contentItems": [] }),
+        "execCommandApproval" | "applyPatchApproval" => json!({
+            "decision": { "denied": { "rejection": "Declined by user" } }
+        }),
+        _ => json!({}),
+    }
 }
 
 fn normalize_item_status(status: String) -> String {

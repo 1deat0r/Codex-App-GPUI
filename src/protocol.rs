@@ -423,6 +423,132 @@ impl AppServerClient {
         )
     }
 
+    pub fn thread_items_list(
+        &self,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Value> {
+        let mut params = json!({ "threadId": thread_id });
+        if let Some(turn_id) = turn_id.filter(|value| !value.is_empty()) {
+            params["turnId"] = Value::String(turn_id.into());
+        }
+        if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
+            params["cursor"] = Value::String(cursor.into());
+        }
+        if let Some(limit) = limit {
+            params["limit"] = json!(limit);
+        }
+        self.request("thread/items/list", params)
+    }
+
+    pub fn thread_turns_list(
+        &self,
+        thread_id: &str,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+        items_view: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({ "threadId": thread_id });
+        if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
+            params["cursor"] = Value::String(cursor.into());
+        }
+        if let Some(limit) = limit {
+            params["limit"] = json!(limit);
+        }
+        if let Some(items_view) = items_view.filter(|value| !value.is_empty()) {
+            params["itemsView"] = Value::String(items_view.into());
+        }
+        self.request("thread/turns/list", params)
+    }
+
+    pub fn thread_search(&self, search_term: &str, archived: Option<bool>) -> Result<Value> {
+        let mut params = json!({ "searchTerm": search_term, "limit": 100 });
+        if let Some(archived) = archived {
+            params["archived"] = Value::Bool(archived);
+        }
+        self.request("thread/search", params)
+    }
+
+    pub fn thread_search_occurrences(
+        &self,
+        thread_id: &str,
+        search_term: &str,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Value> {
+        let mut params = json!({ "threadId": thread_id, "searchTerm": search_term });
+        if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
+            params["cursor"] = Value::String(cursor.into());
+        }
+        if let Some(limit) = limit {
+            params["limit"] = json!(limit);
+        }
+        self.request("thread/searchOccurrences", params)
+    }
+
+    pub fn thread_goal_get(&self, thread_id: &str) -> Result<Value> {
+        self.request("thread/goal/get", json!({ "threadId": thread_id }))
+    }
+
+    pub fn thread_goal_set(
+        &self,
+        thread_id: &str,
+        objective: Option<&str>,
+        status: Option<&str>,
+        token_budget: Option<i64>,
+    ) -> Result<Value> {
+        let mut params = json!({ "threadId": thread_id });
+        if let Some(objective) = objective {
+            params["objective"] = Value::String(objective.into());
+        }
+        if let Some(status) = status {
+            params["status"] = Value::String(status.into());
+        }
+        if let Some(token_budget) = token_budget {
+            params["tokenBudget"] = json!(token_budget);
+        }
+        self.request("thread/goal/set", params)
+    }
+
+    pub fn thread_goal_clear(&self, thread_id: &str) -> Result<Value> {
+        self.request("thread/goal/clear", json!({ "threadId": thread_id }))
+    }
+
+    pub fn thread_settings_update(&self, thread_id: &str, settings: Value) -> Result<Value> {
+        let mut params = settings.as_object().cloned().unwrap_or_default();
+        params.insert("threadId".into(), Value::String(thread_id.into()));
+        self.request("thread/settings/update", Value::Object(params))
+    }
+
+    pub fn thread_metadata_update(&self, thread_id: &str, metadata: Value) -> Result<Value> {
+        let mut params = metadata.as_object().cloned().unwrap_or_default();
+        params.insert("threadId".into(), Value::String(thread_id.into()));
+        self.request("thread/metadata/update", Value::Object(params))
+    }
+
+    pub fn thread_memory_mode_set(&self, thread_id: &str, mode: &str) -> Result<Value> {
+        self.request(
+            "thread/memoryMode/set",
+            json!({ "threadId": thread_id, "mode": mode }),
+        )
+    }
+
+    pub fn thread_revert(&self, thread_id: &str, before_turn_id: &str) -> Result<Value> {
+        self.request(
+            "thread/revert",
+            json!({ "threadId": thread_id, "beforeTurnId": before_turn_id }),
+        )
+    }
+
+    pub fn thread_rollback(&self, thread_id: &str, num_turns: u32) -> Result<Value> {
+        self.request(
+            "thread/rollback",
+            json!({ "threadId": thread_id, "numTurns": num_turns }),
+        )
+    }
+
     pub fn turn_start(&self, thread_id: &str, text: &str) -> Result<Value> {
         self.turn_start_with_options(thread_id, text, None, None, None, None)
     }
@@ -575,6 +701,14 @@ impl AppServerClient {
         self.request("app/installed", params)
     }
 
+    pub fn apps_read(&self, app_ids: &[String], thread_id: Option<&str>) -> Result<Value> {
+        let mut params = json!({ "appIds": app_ids, "includeTools": true });
+        if let Some(thread_id) = thread_id.filter(|value| !value.is_empty()) {
+            params["threadId"] = Value::String(thread_id.into());
+        }
+        self.request("app/read", params)
+    }
+
     pub fn skills_list(&self, cwds: &[String]) -> Result<Value> {
         self.request("skills/list", json!({ "cwds": cwds }))
     }
@@ -603,6 +737,14 @@ impl AppServerClient {
         self.request("account/read", json!({}))
     }
 
+    pub fn account_rate_limits_read(&self) -> Result<Value> {
+        self.request("account/rateLimits/read", json!({}))
+    }
+
+    pub fn account_usage_read(&self) -> Result<Value> {
+        self.request("account/usage/read", json!({}))
+    }
+
     pub fn realtime_start(&self, thread_id: &str, output_modality: &str) -> Result<Value> {
         self.request(
             "thread/realtime/start",
@@ -619,6 +761,24 @@ impl AppServerClient {
             "thread/realtime/appendText",
             json!({ "threadId": thread_id, "text": text }),
         )
+    }
+
+    pub fn realtime_append_speech(&self, thread_id: &str, text: &str) -> Result<Value> {
+        self.request(
+            "thread/realtime/appendSpeech",
+            json!({ "threadId": thread_id, "text": text }),
+        )
+    }
+
+    pub fn realtime_append_audio(&self, thread_id: &str, audio: Value) -> Result<Value> {
+        self.request(
+            "thread/realtime/appendAudio",
+            json!({ "threadId": thread_id, "audio": audio }),
+        )
+    }
+
+    pub fn realtime_list_voices(&self) -> Result<Value> {
+        self.request("thread/realtime/listVoices", json!({}))
     }
 
     pub fn realtime_stop(&self, thread_id: &str) -> Result<Value> {
@@ -675,6 +835,73 @@ impl AppServerClient {
                 "delivery": "inline"
             }),
         )
+    }
+
+    pub fn project_list(&self, limit: Option<u32>, cursor: Option<&str>) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(limit) = limit {
+            params["limit"] = json!(limit);
+        }
+        if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
+            params["cursor"] = Value::String(cursor.into());
+        }
+        self.request("project/list", params)
+    }
+
+    pub fn project_read(&self, project_id: &str) -> Result<Value> {
+        self.request("project/read", json!({ "projectId": project_id }))
+    }
+
+    pub fn project_create(&self, idempotency_key: &str, name: &str, roots: Value) -> Result<Value> {
+        self.request(
+            "project/create",
+            json!({ "idempotencyKey": idempotency_key, "name": name, "roots": roots }),
+        )
+    }
+
+    pub fn project_update(&self, project_id: &str, update: Value) -> Result<Value> {
+        let mut params = update.as_object().cloned().unwrap_or_default();
+        params.insert("projectId".into(), Value::String(project_id.into()));
+        self.request("project/update", Value::Object(params))
+    }
+
+    pub fn config_value_write(&self, key_path: &[String], value: Value) -> Result<Value> {
+        self.request(
+            "config/value/write",
+            json!({ "keyPath": key_path, "value": value }),
+        )
+    }
+
+    pub fn config_mcp_server_reload(&self) -> Result<Value> {
+        self.request("config/mcpServer/reload", json!({}))
+    }
+
+    pub fn marketplace_add(&self, name: &str, source: Value) -> Result<Value> {
+        self.request("marketplace/add", json!({ "name": name, "source": source }))
+    }
+
+    pub fn marketplace_remove(&self, name: &str) -> Result<Value> {
+        self.request("marketplace/remove", json!({ "name": name }))
+    }
+
+    pub fn marketplace_upgrade(&self, name: Option<&str>) -> Result<Value> {
+        let mut params = json!({});
+        if let Some(name) = name.filter(|value| !value.is_empty()) {
+            params["name"] = Value::String(name.into());
+        }
+        self.request("marketplace/upgrade", params)
+    }
+
+    pub fn plugin_install(&self, plugin_id: &str, marketplace: Option<&str>) -> Result<Value> {
+        let mut params = json!({ "pluginId": plugin_id });
+        if let Some(marketplace) = marketplace.filter(|value| !value.is_empty()) {
+            params["marketplace"] = Value::String(marketplace.into());
+        }
+        self.request("plugin/install", params)
+    }
+
+    pub fn plugin_uninstall(&self, plugin_id: &str) -> Result<Value> {
+        self.request("plugin/uninstall", json!({ "pluginId": plugin_id }))
     }
 }
 

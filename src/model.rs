@@ -128,6 +128,12 @@ pub enum Entry {
         reason: String,
         #[serde(default)]
         requested: bool,
+        #[serde(default)]
+        approval_kind: String,
+        #[serde(default)]
+        choices: Vec<String>,
+        #[serde(default)]
+        request_details: String,
     },
     Attachment {
         id: String,

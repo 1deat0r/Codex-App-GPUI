@@ -1272,8 +1272,8 @@ fn entry_view(
     cx: &mut Context<AppState>,
 ) -> Stateful<Div> {
     match entry {
-        Entry::User { text, time, .. } => div()
-            .id(ElementId::Name(format!("entry-user-{}", text.len()).into()))
+        Entry::User { id, text, time } => div()
+            .id(ElementId::Name(format!("entry-user-{id}").into()))
             .flex()
             .justify_end()
             .child(
@@ -1295,10 +1295,8 @@ fn entry_view(
                             .child(time.clone()),
                     ),
             ),
-        Entry::Assistant { text, time, .. } => div()
-            .id(ElementId::Name(
-                format!("entry-assistant-{}", text.len()).into(),
-            ))
+        Entry::Assistant { id, text, time } => div()
+            .id(ElementId::Name(format!("entry-assistant-{id}").into()))
             .flex()
             .flex_col()
             .gap_2()
@@ -1351,13 +1349,13 @@ fn entry_view(
             )
         }
         Entry::Tool {
+            id,
             name,
             status,
             detail,
             output,
-            ..
         } => div()
-            .id(ElementId::Name(format!("entry-tool-{}", name).into()))
+            .id(ElementId::Name(format!("entry-tool-{id}").into()))
             .bg(theme::bg_surface())
             .border_1()
             .border_color(theme::border())
@@ -1407,13 +1405,13 @@ fn entry_view(
                     .child(output.clone())
             })),
         Entry::Code {
+            id,
             language,
             code,
             output,
             exit_code,
-            ..
         } => div()
-            .id(ElementId::Name(format!("entry-code-{}", language).into()))
+            .id(ElementId::Name(format!("entry-code-{id}").into()))
             .bg(theme::code_bg())
             .border_1()
             .border_color(theme::border())
@@ -1459,13 +1457,13 @@ fn entry_view(
                     .child(format!("exit {code}"))
             })),
         Entry::Diff {
+            id,
             path,
             additions,
             deletions,
             summary,
-            ..
         } => div()
-            .id(ElementId::Name(format!("entry-diff-{}", path).into()))
+            .id(ElementId::Name(format!("entry-diff-{id}").into()))
             .bg(theme::bg_surface())
             .border_1()
             .border_color(theme::border())
@@ -1492,18 +1490,35 @@ fn entry_view(
                     .child(format!("−{deletions}")),
             ),
         Entry::Approval {
+            id,
             title,
             command,
             cwd,
             reason,
             requested,
-            ..
+            approval_kind,
+            choices,
+            request_details,
         } => {
             let requested = *requested;
+            let approval_id = id.clone();
+            let interactive = approval_kind != "item/tool/call";
+            let allow_label = if approval_kind == "item/permissions/requestApproval" {
+                "Grant"
+            } else if approval_kind == "mcpServer/elicitation/request" {
+                "Accept"
+            } else {
+                "Allow"
+            };
+            let deny_label = if approval_kind == "item/tool/requestUserInput"
+                || approval_kind == "mcpServer/elicitation/request"
+            {
+                "Cancel"
+            } else {
+                "Deny"
+            };
             div()
-                .id(ElementId::Name(
-                    format!("entry-approval-{}", command.len()).into(),
-                ))
+                .id(ElementId::Name(format!("entry-approval-{id}").into()))
                 .bg(theme::bg_surface())
                 .border_1()
                 .border_color(if requested {
@@ -1548,20 +1563,38 @@ fn entry_view(
                         .text_color(theme::text_faint())
                         .child(format!("{} · {}", cwd, reason)),
                 )
-                .children(requested.then(|| {
+                .children((!request_details.is_empty()).then(|| {
+                    div()
+                        .text_size(rems(0.7))
+                        .text_color(theme::text_faint())
+                        .child(request_details.clone())
+                }))
+                .children((!choices.is_empty()).then(|| {
+                    div().flex().gap_1().children(choices.iter().map(|choice| {
+                        div()
+                            .bg(theme::bg_hover())
+                            .rounded_sm()
+                            .px_2()
+                            .py_1()
+                            .text_size(rems(0.64))
+                            .text_color(theme::text_muted())
+                            .child(choice.clone())
+                    }))
+                }))
+                .children((requested && interactive).then(|| {
                     div()
                         .flex()
                         .gap_2()
                         .child(text_button(
-                            "approval-allow",
-                            "Allow",
+                            ElementId::Name(format!("approval-allow-{approval_id}").into()),
+                            allow_label,
                             window.listener_for(&cx.entity(), |this, _event, _window, cx| {
                                 this.approve_current(true, cx)
                             }),
                         ))
                         .child(text_button(
-                            "approval-deny",
-                            "Deny",
+                            ElementId::Name(format!("approval-deny-{approval_id}").into()),
+                            deny_label,
                             window.listener_for(&cx.entity(), |this, _event, _window, cx| {
                                 this.approve_current(false, cx)
                             }),
@@ -1569,11 +1602,11 @@ fn entry_view(
                 }))
         }
         Entry::Attachment {
+            id,
             name,
             attachment_kind,
-            ..
         } => div()
-            .id(ElementId::Name(format!("entry-attachment-{}", name).into()))
+            .id(ElementId::Name(format!("entry-attachment-{id}").into()))
             .flex()
             .items_center()
             .gap_2()
@@ -1591,10 +1624,8 @@ fn entry_view(
                     .text_color(theme::text_faint())
                     .child(attachment_kind.clone()),
             ),
-        Entry::System { text, .. } => div()
-            .id(ElementId::Name(
-                format!("entry-system-{}", text.len()).into(),
-            ))
+        Entry::System { id, text } => div()
+            .id(ElementId::Name(format!("entry-system-{id}").into()))
             .w_full()
             .text_center()
             .text_size(rems(0.72))
