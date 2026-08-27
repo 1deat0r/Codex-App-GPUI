@@ -2555,26 +2555,31 @@ fn pull_requests_view(
 }
 
 fn sites_view(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Stateful<Div> {
-    let mut cards = state
-        .catalog
-        .apps
-        .iter()
-        .enumerate()
-        .map(|(index, app)| {
-            empty_destination_card(
-                format!("site-available-{index}"),
-                "Connected app surface",
-                Some((
-                    app.clone(),
-                    Box::new(
-                        window.listener_for(&cx.entity(), |this, _event, _window, cx| {
-                            this.open_settings(SettingsPage::Apps, cx);
-                        }),
-                    ),
-                )),
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut cards = Vec::new();
+    if let Some(active_app) = &state.active_app {
+        cards.push(destination_card(
+            "site-active".into(),
+            "Active app surface".into(),
+            active_app.clone(),
+            None,
+        ));
+    }
+    cards.extend(state.catalog.apps.iter().enumerate().map(|(index, app)| {
+        let app_id = app.clone();
+        destination_card(
+            format!("site-available-{index}"),
+            app.clone(),
+            "Connected app surface reported by the app-server".into(),
+            Some((
+                "Open".into(),
+                Box::new(
+                    window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                        this.open_app(app_id.clone(), cx);
+                    }),
+                ),
+            )),
+        )
+    }));
     if cards.is_empty() {
         cards.push(empty_destination_card(
             "sites-empty",
@@ -3033,14 +3038,41 @@ fn settings_page_body(
                     .catalog
                     .account_label
                     .clone()
-                    .unwrap_or_else(|| "Local account".into()),
-                None,
+                    .unwrap_or_else(|| "Not signed in".into()),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.refresh_account(cx);
+                    },
+                ))),
             ))
             .child(setting_row(
                 "Provider",
                 "Authentication is delegated to Codex app-server",
                 "OpenAI Codex".into(),
                 None,
+            ))
+            .child(setting_row(
+                "Log in",
+                "Start the official Codex device-code login flow",
+                "Start".into(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.start_account_login(cx);
+                    },
+                ))),
+            ))
+            .child(setting_row(
+                "Log out",
+                "End the authenticated app-server session",
+                "Sign out".into(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.logout_account(cx);
+                    },
+                ))),
             ))
             .child(setting_row(
                 "Data boundary",

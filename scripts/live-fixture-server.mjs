@@ -268,6 +268,15 @@ function handle(message) {
       case "app/installed":
         response(id, { apps: [{ id: "fixture-app", name: "Fixture App" }] });
         break;
+      case "app/read":
+        response(id, {
+          apps: (params.appIds ?? ["fixture-app"]).map((appId) => ({
+            id: appId,
+            name: "Fixture App",
+            tools: [{ name: "fixture_tool" }],
+          })),
+        });
+        break;
       case "plugin/list":
         response(id, { marketplaces: [{ name: "Fixture Marketplace", plugins: [{ id: "fixture-plugin", name: "Fixture Plugin" }] }] });
         break;

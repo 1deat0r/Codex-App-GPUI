@@ -438,6 +438,7 @@ pub struct AppState {
     pub connection: ConnectionState,
     pub live_client: Option<Arc<AppServerClient>>,
     pub catalog: ServerCatalog,
+    pub active_app: Option<String>,
     pub voice_active: bool,
     pub active_turn_id: Option<String>,
     pub pending_interaction: Option<PendingInteraction>,
@@ -487,6 +488,7 @@ impl AppState {
             connection: ConnectionState::Demo,
             live_client: None,
             catalog: ServerCatalog::default(),
+            active_app: None,
             voice_active: false,
             active_turn_id: None,
             pending_interaction: None,
@@ -1769,6 +1771,126 @@ impl AppState {
                     this.catalog = catalog;
                     this.normalize_catalog_defaults();
                     cx.notify();
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn open_app(&mut self, app_id: String, cx: &mut Context<Self>) {
+        let thread_id = self.current_task().map(|task| task.id.clone());
+        let Some(client) = self.live_client.clone() else {
+            self.active_app = Some(format!("{app_id} · local app surface"));
+            self.notify_success("App surface opened locally", cx);
+            return;
+        };
+        let request_ids = vec![app_id.clone()];
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || client.apps_read(&request_ids, thread_id.as_deref()))
+                            .await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(value) => {
+                        let detail = serde_json::to_string(&value)
+                            .unwrap_or_else(|_| "app metadata loaded".into());
+                        this.active_app = Some(format!(
+                            "{} · {}",
+                            app_id,
+                            detail.chars().take(180).collect::<String>()
+                        ));
+                        this.notify_success("App surface opened", cx);
+                    }
+                    Err(error) => this.fail(&format!("App surface failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn refresh_account(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.live_client.clone() else {
+            self.catalog.account_label = Some("Local account".into());
+            self.notify_success("Account refreshed locally", cx);
+            return;
+        };
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move { smol::unblock(move || client.account_read()).await })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(value) => {
+                        this.catalog.account_label = account_label_from_value(&value);
+                        this.notify_success("Account refreshed", cx);
+                    }
+                    Err(error) => this.fail(&format!("Account refresh failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn start_account_login(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.live_client.clone() else {
+            self.fail("Connect to the Codex app-server before signing in", cx);
+            return;
+        };
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || {
+                            client.account_login_start(json!({ "type": "chatgptDeviceCode" }))
+                        })
+                        .await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(value) => {
+                        let login_id = string_field(&value, &["loginId", "id"]);
+                        this.catalog.account_label = Some(if login_id.is_empty() {
+                            "Login started".into()
+                        } else {
+                            format!("Login started · {login_id}")
+                        });
+                        this.notify_success("Follow the app-server login instructions", cx);
+                    }
+                    Err(error) => this.fail(&format!("Login failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn logout_account(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.live_client.clone() else {
+            self.catalog.account_label = None;
+            self.notify_success("Signed out of the local account", cx);
+            return;
+        };
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move { smol::unblock(move || client.account_logout()).await })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(_) => {
+                        this.catalog.account_label = None;
+                        this.notify_success("Signed out", cx);
+                    }
+                    Err(error) => this.fail(&format!("Sign out failed: {error}"), cx),
                 });
             },
         )
