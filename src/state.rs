@@ -81,6 +81,14 @@ pub struct GitHubState {
     pub pull_requests: Vec<PullRequestSummary>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorktreeSummary {
+    pub path: String,
+    pub head: String,
+    pub branch: String,
+    pub is_main: bool,
+}
+
 impl ServerCatalog {
     fn from_client(client: &AppServerClient, cwd: Option<&str>) -> Self {
         let mut catalog = Self::default();
@@ -435,6 +443,7 @@ pub struct AppState {
     pub pending_interaction: Option<PendingInteraction>,
     pub pending_interactions: Vec<PendingInteraction>,
     pub github: GitHubState,
+    pub worktrees: Vec<WorktreeSummary>,
     pub rename_open: bool,
     pub rename_draft: String,
     pub rename_caret: usize,
@@ -486,6 +495,7 @@ impl AppState {
                 status: "Not loaded".into(),
                 ..GitHubState::default()
             },
+            worktrees: Vec::new(),
             rename_open: false,
             rename_draft: String::new(),
             rename_caret: 0,
@@ -1725,12 +1735,18 @@ impl AppState {
         self.app_menu = None;
         self.view_open = false;
         self.refresh_catalog(cx);
+        if page == SettingsPage::Worktrees {
+            self.refresh_worktrees(cx);
+        }
         cx.notify();
     }
 
     pub fn select_settings_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
         self.settings_page = page;
         self.refresh_catalog(cx);
+        if page == SettingsPage::Worktrees {
+            self.refresh_worktrees(cx);
+        }
         cx.notify();
     }
 
@@ -1757,6 +1773,155 @@ impl AppState {
             },
         )
         .detach();
+    }
+
+    pub fn refresh_worktrees(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.current_project().map(|project| project.path.clone()) else {
+            self.worktrees.clear();
+            self.notify_success("No project selected for worktree discovery", cx);
+            return;
+        };
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move { smol::unblock(move || git_worktrees(&path)).await })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(worktrees) => {
+                        let count = worktrees.len();
+                        this.worktrees = worktrees;
+                        this.notify_success(&format!("Worktrees refreshed · {count}"), cx);
+                    }
+                    Err(error) => {
+                        this.worktrees.clear();
+                        this.fail(&format!("Worktree discovery failed: {error}"), cx);
+                    }
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn delete_worktree(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(repository) = self.current_project().map(|project| project.path.clone()) else {
+            return;
+        };
+        let Some(worktree) = self.worktrees.iter().find(|worktree| worktree.path == path) else {
+            self.fail("Worktree is not in the discovered repository list", cx);
+            return;
+        };
+        if worktree.is_main {
+            self.fail("The main worktree cannot be deleted", cx);
+            return;
+        }
+        if self
+            .current_task()
+            .map(|task| task.path == path)
+            .unwrap_or(false)
+        {
+            self.fail(
+                "Select another task before deleting its active worktree",
+                cx,
+            );
+            return;
+        }
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let target = path.clone();
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || remove_git_worktree(&repository, &target)).await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(()) => {
+                        this.worktrees.retain(|worktree| worktree.path != path);
+                        this.notify_success("Worktree deleted", cx);
+                    }
+                    Err(error) => this.fail(&format!("Worktree delete failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn new_chat_in_worktree(&mut self, path: String, cx: &mut Context<Self>) {
+        if let Some(client) = self.live_client.clone() {
+            let async_cx = cx.to_async();
+            cx.spawn(
+                move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                    let request_path = path.clone();
+                    let result = async_cx
+                        .background_executor()
+                        .spawn(async move {
+                            smol::unblock(move || client.thread_start(Some(&request_path))).await
+                        })
+                        .await;
+                    let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                        Ok(value) => {
+                            if let Some(thread) =
+                                value.get("thread").and_then(ServerThread::from_value)
+                            {
+                                let id = thread.id.clone();
+                                this.add_server_thread(thread);
+                                this.select_task("live-codex".into(), id, cx);
+                                this.notify_success("New chat in this worktree", cx);
+                            } else {
+                                this.fail("The app-server did not return a new thread", cx);
+                            }
+                        }
+                        Err(error) => this.fail(&format!("New worktree chat failed: {error}"), cx),
+                    });
+                },
+            )
+            .detach();
+            return;
+        }
+
+        let project_id = self
+            .workspace
+            .projects
+            .iter()
+            .find(|project| project.path == path)
+            .map(|project| project.id.clone());
+        let Some(project_id) = project_id else {
+            self.add_local_project(PathBuf::from(path), cx);
+            return;
+        };
+        let id = format!("worktree-task-{}", self.workspace.all_tasks().count() + 1);
+        let task = Task {
+            id: id.clone(),
+            title: "New task".into(),
+            project_id: project_id.clone(),
+            status: "idle".into(),
+            path,
+            branch: None,
+            model: self.settings.default_model.clone(),
+            reasoning: self.settings.default_reasoning.clone(),
+            updated_at: "Now".into(),
+            archived: false,
+            pinned: false,
+            entries: Vec::new(),
+            plan: Vec::new(),
+            usage: Default::default(),
+            goal: None,
+            children: Vec::new(),
+            queue: Vec::new(),
+        };
+        if let Some(project) = self
+            .workspace
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        {
+            project.tasks.insert(0, task);
+        }
+        self.select_task(project_id, id, cx);
+        self.notify_success("New chat in this worktree", cx);
     }
 
     pub fn toggle_project(&mut self, project_id: String, cx: &mut Context<Self>) {
@@ -2528,6 +2693,37 @@ impl AppState {
         .detach();
     }
 
+    pub fn stop_all_background_terminals(&mut self, cx: &mut Context<Self>) {
+        let thread_id = self.selected_task.clone();
+        let Some(client) = self
+            .live_client
+            .clone()
+            .filter(|_| self.connection == ConnectionState::Live)
+        else {
+            self.notify_success("No live background terminals to stop", cx);
+            return;
+        };
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || client.thread_background_terminals_clean(&thread_id))
+                            .await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(_) => this.notify_success("Background terminals stopped", cx),
+                    Err(error) => {
+                        this.fail(&format!("Could not stop background terminals: {error}"), cx)
+                    }
+                });
+            },
+        )
+        .detach();
+    }
+
     pub fn copy_diff_path(&mut self, path: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(path));
         self.notify_success("Path copied", cx);
@@ -3221,6 +3417,12 @@ impl AppState {
                 self.settings.ambient_suggestions = !self.settings.ambient_suggestions
             }
             "queue-follow-ups" => self.settings.queue_follow_ups = !self.settings.queue_follow_ups,
+            "worktree-auto-fetch" => {
+                self.settings.worktree_auto_fetch = !self.settings.worktree_auto_fetch
+            }
+            "worktree-auto-cleanup" => {
+                self.settings.worktree_auto_cleanup = !self.settings.worktree_auto_cleanup
+            }
             "git-review" => self.settings.git_review_enabled = !self.settings.git_review_enabled,
             "force-push" => self.settings.force_push = !self.settings.force_push,
             "draft-prs" => self.settings.draft_prs = !self.settings.draft_prs,
@@ -4291,6 +4493,81 @@ fn diff_entry_from_value(id: &str, value: &Value) -> Option<Entry> {
         deletions: summary.lines().filter(|line| line.starts_with('-')).count() as u32,
         summary,
     })
+}
+
+fn git_worktrees(path: &str) -> anyhow::Result<Vec<WorktreeSummary>> {
+    let output = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(path)
+        .output()
+        .map_err(|error| anyhow::anyhow!("start git worktree list: {error}"))?;
+    if !output.status.success() {
+        return Err(anyhow::anyhow!(
+            "git worktree list exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(parse_git_worktrees(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn remove_git_worktree(repository: &str, path: &str) -> anyhow::Result<()> {
+    let output = Command::new("git")
+        .args(["worktree", "remove", path])
+        .current_dir(repository)
+        .output()
+        .map_err(|error| anyhow::anyhow!("start git worktree remove: {error}"))?;
+    if !output.status.success() {
+        return Err(anyhow::anyhow!(
+            "git worktree remove exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+fn parse_git_worktrees(output: &str) -> Vec<WorktreeSummary> {
+    let mut records = Vec::new();
+    let mut current: Option<WorktreeSummary> = None;
+    for line in output.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            if let Some(record) = current.take() {
+                records.push(record);
+            }
+            current = Some(WorktreeSummary {
+                path: path.to_owned(),
+                ..WorktreeSummary::default()
+            });
+        } else if let Some(head) = line.strip_prefix("HEAD ") {
+            if let Some(record) = current.as_mut() {
+                record.head = head.to_owned();
+            }
+        } else if let Some(branch) = line.strip_prefix("branch ") {
+            if let Some(record) = current.as_mut() {
+                record.branch = branch
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(branch)
+                    .to_owned();
+            }
+        } else if line == "detached" {
+            if let Some(record) = current.as_mut() {
+                record.branch = "(detached)".into();
+            }
+        }
+    }
+    if let Some(record) = current {
+        records.push(record);
+    }
+    for (index, record) in records.iter_mut().enumerate() {
+        record.is_main = index == 0;
+        if record.branch.is_empty() {
+            record.branch = "(unknown)".into();
+        }
+    }
+    records
 }
 
 fn local_review_entry(path: &str, entry_index: usize) -> anyhow::Result<Entry> {
@@ -5548,5 +5825,21 @@ mod tests {
             event_entry_id("future/event", &event, 0),
             event_entry_id("future/other", &event, 0)
         );
+    }
+
+    #[test]
+    fn git_worktree_parser_preserves_paths_branches_and_main_marker() {
+        let worktrees = parse_git_worktrees(
+            "worktree /repo/main\nHEAD abc123\nbranch refs/heads/main\n\nworktree /repo/feature one\nHEAD def456\nbranch refs/heads/feature/one\n\nworktree /repo/detached\nHEAD 789abc\ndetached\n",
+        );
+        assert_eq!(worktrees.len(), 3);
+        assert_eq!(worktrees[0].path, "/repo/main");
+        assert_eq!(worktrees[0].head, "abc123");
+        assert_eq!(worktrees[0].branch, "main");
+        assert!(worktrees[0].is_main);
+        assert_eq!(worktrees[1].path, "/repo/feature one");
+        assert_eq!(worktrees[1].branch, "feature/one");
+        assert!(!worktrees[1].is_main);
+        assert_eq!(worktrees[2].branch, "(detached)");
     }
 }

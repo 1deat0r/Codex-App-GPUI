@@ -1105,7 +1105,7 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
         .absolute()
         .top(px(42.0))
         .right(px(12.0))
-        .w(px(210.0))
+        .w(px(310.0))
         .flex()
         .flex_col()
         .gap_1()
@@ -1125,9 +1125,37 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
             ),
             menu_action(
                 "menu-fork",
-                "Fork task",
+                "Fork chat from here",
                 window.listener_for(&cx.entity(), |this, _event, _window, cx| {
                     this.fork_current(cx);
+                }),
+            ),
+            menu_action(
+                "menu-fork-worktree",
+                "Fork from this message in a new worktree",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.fork_current(cx);
+                }),
+            ),
+            menu_action(
+                "menu-fork-workspace",
+                "Fork from this message in the current workspace",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.fork_current(cx);
+                }),
+            ),
+            menu_action(
+                "menu-fork-same-worktree",
+                "Fork from this message in the same worktree",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.fork_current(cx);
+                }),
+            ),
+            menu_action(
+                "menu-subagents",
+                "Open subagents",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.set_content_layout("Task tabs", cx);
                 }),
             ),
             menu_action(
@@ -1142,6 +1170,34 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
                 "Compact context",
                 window.listener_for(&cx.entity(), |this, _event, _window, cx| {
                     this.compact_current(cx);
+                }),
+            ),
+            menu_action(
+                "menu-pr-associated",
+                "Pull request associated with this task",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.set_route(Route::PullRequests, cx);
+                }),
+            ),
+            menu_action(
+                "menu-usage",
+                "Current task usage",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.open_settings(SettingsPage::Usage, cx);
+                }),
+            ),
+            menu_action(
+                "menu-background-terminal",
+                "Background terminal",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.set_content_layout("Terminal", cx);
+                }),
+            ),
+            menu_action(
+                "menu-stop-background-terminals",
+                "Stop all background terminals",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.stop_all_background_terminals(cx);
                 }),
             ),
             menu_action(
@@ -3288,48 +3344,7 @@ fn settings_page_body(
                 "⌘ ⇧ X/Z".into(),
                 None,
             )),
-        SettingsPage::Worktrees => div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(setting_row(
-                "Environment",
-                "Where a task executes",
-                "Local workspace".into(),
-                None,
-            ))
-            .child(setting_row(
-                "Worktree root",
-                "Optional root for isolated branches",
-                if state.settings.worktree_root.is_empty() {
-                    "Not configured".into()
-                } else {
-                    state.settings.worktree_root.clone()
-                },
-                Some(Box::new(window.listener_for(
-                    &cx.entity(),
-                    |this, _event, _window, cx| {
-                        this.pick_worktree_root(cx);
-                    },
-                ))),
-            ))
-            .child(setting_row(
-                "Add project",
-                "Import a local folder into the project list",
-                "Choose folder".into(),
-                Some(Box::new(window.listener_for(
-                    &cx.entity(),
-                    |this, _event, _window, cx| {
-                        this.pick_project(cx);
-                    },
-                ))),
-            ))
-            .child(setting_row(
-                "Auto setup",
-                "Prepare dependencies when entering a worktree",
-                "On".into(),
-                None,
-            )),
+        SettingsPage::Worktrees => worktrees_settings_page(state, window, cx),
         SettingsPage::Git => div()
             .flex()
             .flex_col()
@@ -3910,6 +3925,160 @@ fn extended_settings_page(
             )),
         _ => div(),
     }
+}
+
+fn worktrees_settings_page(
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Div {
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(setting_row(
+            "Environment",
+            "Where a task executes",
+            state
+                .current_project()
+                .map(|project| project.path.clone())
+                .unwrap_or_else(|| "Local workspace".into()),
+            None,
+        ))
+        .child(setting_row(
+            "Worktree root",
+            "Directory used for isolated branches",
+            if state.settings.worktree_root.is_empty() {
+                "Not configured".into()
+            } else {
+                state.settings.worktree_root.clone()
+            },
+            Some(Box::new(window.listener_for(
+                &cx.entity(),
+                |this, _event, _window, cx| {
+                    this.pick_worktree_root(cx);
+                },
+            ))),
+        ))
+        .child(setting_toggle(
+            "Always fetch upstream before creating worktrees",
+            "Refresh the repository before a new worktree is created",
+            state.settings.worktree_auto_fetch,
+            "worktree-auto-fetch",
+            state,
+            window,
+            cx,
+        ))
+        .child(setting_toggle(
+            "Automatically delete old worktrees",
+            "Remove old clean worktrees when the configured limit is exceeded",
+            state.settings.worktree_auto_cleanup,
+            "worktree-auto-cleanup",
+            state,
+            window,
+            cx,
+        ))
+        .child(setting_row(
+            "Auto-delete limit",
+            "Maximum old worktrees retained automatically",
+            state.settings.worktree_keep_count.to_string(),
+            Some(Box::new(window.listener_for(
+                &cx.entity(),
+                |this, _event, _window, cx| {
+                    this.cycle_worktree_keep_count(cx);
+                },
+            ))),
+        ))
+        .child(setting_row(
+            "Refresh",
+            "Read the current Git worktree inventory",
+            "↻".into(),
+            Some(Box::new(window.listener_for(
+                &cx.entity(),
+                |this, _event, _window, cx| {
+                    this.refresh_worktrees(cx);
+                },
+            ))),
+        ));
+
+    if state.worktrees.is_empty() {
+        body = body.child(setting_row(
+            "Worktrees",
+            "Conversations attached to isolated branches",
+            "No worktrees yet".into(),
+            None,
+        ));
+    } else {
+        for worktree in &state.worktrees {
+            body = body.child(worktree_row(worktree, state, window, cx));
+        }
+    }
+    body
+}
+
+fn worktree_row(
+    worktree: &crate::state::WorktreeSummary,
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
+    let path = worktree.path.clone();
+    let new_chat_path = path.clone();
+    let delete_path = path.clone();
+    let task_count = state
+        .workspace
+        .projects
+        .iter()
+        .find(|project| project.path == path)
+        .map(|project| project.tasks.len())
+        .unwrap_or(0);
+    let mut row = div()
+        .id(ElementId::Name(
+            format!("worktree-row-{}", path.replace(['/', '\\', ' '], "-")).into(),
+        ))
+        .flex()
+        .items_center()
+        .gap_3()
+        .bg(theme::bg_surface())
+        .border_1()
+        .border_color(theme::border())
+        .rounded_lg()
+        .px_4()
+        .py_3()
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_size(rems(0.82)).child(path))
+                .child(
+                    div()
+                        .text_size(rems(0.7))
+                        .text_color(theme::text_faint())
+                        .child(format!(
+                            "{} · {} conversation(s)",
+                            worktree.branch, task_count
+                        )),
+                ),
+        )
+        .child(text_button(
+            ElementId::Name(format!("worktree-new-chat-{}", worktree.head).into()),
+            "New chat in this worktree",
+            window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                this.new_chat_in_worktree(new_chat_path.clone(), cx);
+            }),
+        ));
+    if !worktree.is_main {
+        row = row.child(text_button(
+            ElementId::Name(format!("worktree-delete-{}", worktree.head).into()),
+            "Delete",
+            window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                this.delete_worktree(delete_path.clone(), cx);
+            }),
+        ));
+    }
+    row
 }
 
 fn capability_page(title: &'static str, description: &'static str, connected: bool) -> Div {
