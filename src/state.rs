@@ -538,6 +538,7 @@ impl AppState {
             settings_focus: cx.focus_handle(),
         };
         state.ensure_selection();
+        state.restore_current_draft();
         state
     }
 
@@ -1537,11 +1538,11 @@ impl AppState {
     }
 
     pub fn select_task(&mut self, project_id: String, task_id: String, cx: &mut Context<Self>) {
+        self.save_current_draft();
         self.selected_project = project_id;
         self.selected_task = task_id;
         self.route = Route::Task;
-        self.draft.clear();
-        self.caret = 0;
+        self.restore_current_draft();
         self.selection_anchor = None;
         self.query_selection_anchor = None;
         self.attachments.clear();
@@ -1580,6 +1581,7 @@ impl AppState {
             updated_at: "Now".into(),
             archived: false,
             pinned: false,
+            draft: String::new(),
             entries: Vec::new(),
             plan: Vec::new(),
             usage: Default::default(),
@@ -2056,6 +2058,7 @@ impl AppState {
             updated_at: "Now".into(),
             archived: false,
             pinned: false,
+            draft: String::new(),
             entries: Vec::new(),
             plan: Vec::new(),
             usage: Default::default(),
@@ -2524,9 +2527,9 @@ impl AppState {
             .unwrap_or(0);
         self.settings.branch_prefix = OPTIONS[(position + 1) % OPTIONS.len()].into();
         let value = if self.settings.branch_prefix.is_empty() {
-            "(none)"
+            "(none)".to_owned()
         } else {
-            self.settings.branch_prefix.as_str()
+            self.settings.branch_prefix.clone()
         };
         self.persist(cx);
         self.notify_success(&format!("Branch prefix: {value}"), cx);
@@ -2852,6 +2855,7 @@ impl AppState {
             updated_at: "Now".into(),
             archived: false,
             pinned: false,
+            draft: String::new(),
             entries: Vec::new(),
             plan: Vec::new(),
             usage: Default::default(),
@@ -4130,6 +4134,7 @@ impl AppState {
             key,
             cx,
         ) {
+            self.persist(cx);
             return true;
         }
         if self.handle_command_shortcut(key, window, cx) {
@@ -4151,6 +4156,7 @@ impl AppState {
         if action == InputAction::Send {
             self.send(cx);
         } else {
+            self.persist(cx);
             cx.notify();
         }
         false
@@ -4373,7 +4379,24 @@ impl AppState {
         }
     }
 
-    fn persist(&self, _cx: &mut Context<Self>) {
+    fn save_current_draft(&mut self) {
+        let draft = self.draft.clone();
+        if let Some(task) = self.current_task_mut() {
+            task.draft = draft;
+        }
+    }
+
+    fn restore_current_draft(&mut self) {
+        self.draft = self
+            .current_task()
+            .map(|task| task.draft.clone())
+            .unwrap_or_default();
+        self.caret = self.draft.chars().count();
+        self.selection_anchor = None;
+    }
+
+    fn persist(&mut self, _cx: &mut Context<Self>) {
+        self.save_current_draft();
         let _ = persistence::save(&self.snapshot());
     }
 
@@ -4729,6 +4752,7 @@ fn task_from_server(thread: &ServerThread) -> Task {
         },
         archived: thread.archived,
         pinned: false,
+        draft: String::new(),
         entries: vec![Entry::System {
             id: format!("system-{}", thread.id),
             text: "Connected to Codex app-server. Select this task to continue.".into(),

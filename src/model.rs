@@ -76,6 +76,8 @@ pub struct Task {
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
+    pub draft: String,
+    #[serde(default)]
     pub entries: Vec<Entry>,
     #[serde(default)]
     pub plan: Vec<PlanStep>,
@@ -432,6 +434,7 @@ impl Workspace {
                 updated_at: "Yesterday".into(),
                 archived: false,
                 pinned: false,
+                draft: String::new(),
                 entries: Vec::new(),
                 plan: Vec::new(),
                 usage: Usage::default(),
@@ -516,6 +519,7 @@ impl Task {
             updated_at: "Now".into(),
             archived: false,
             pinned: false,
+            draft: String::new(),
             entries: vec![
                 Entry::User {
                     id: "demo-user-1".into(),

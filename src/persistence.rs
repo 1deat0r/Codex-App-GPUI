@@ -245,6 +245,7 @@ mod tests {
         original.settings.pull_request_watch_instructions = "Fix failing checks".into();
         original.settings.projectless_task_folder = "/tmp/projectless".into();
         original.skill_roots = vec!["/tmp/skills".into()];
+        original.workspace.projects[0].tasks[0].draft = "keep this draft".into();
         save_to(&path, &original).unwrap();
         let restored = load_from(&path).unwrap().unwrap();
         assert_eq!(restored, original);
