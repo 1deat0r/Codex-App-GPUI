@@ -616,6 +616,7 @@ impl AppState {
             "turn/started" => {
                 if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
                     task.status = "running".into();
+                    persist = true;
                 }
                 if thread_id == Some(self.selected_task.as_str()) {
                     self.active_turn_id = params
@@ -735,8 +736,15 @@ impl AppState {
                 ) {
                     if let Some(entry) = entry_from_server_item(item) {
                         upsert_entry(task, entry);
-                        persist = method == "item/completed";
+                    } else if let Some(entry) = generic_event_entry(
+                        method,
+                        &params,
+                        string_field(item, &["id"]).as_str(),
+                        task.entries.len(),
+                    ) {
+                        upsert_entry(task, entry);
                     }
+                    persist = true;
                 }
             }
             "item/agentMessage/delta" => {
@@ -759,6 +767,27 @@ impl AppState {
                     if let Some(task) = self.task_mut_by_id(thread_id) {
                         append_reasoning_delta(task, item_id, delta);
                     }
+                }
+            }
+            "item/reasoning/summaryPartAdded" => {
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    let item_id = params
+                        .get("itemId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("reasoning-summary");
+                    let index = params
+                        .get("summaryIndex")
+                        .map(value_text)
+                        .unwrap_or_default();
+                    upsert_entry(
+                        task,
+                        Entry::Reasoning {
+                            id: format!("{item_id}-summary-{index}"),
+                            text: format!("Reasoning summary part {index}"),
+                            collapsed: false,
+                        },
+                    );
+                    persist = true;
                 }
             }
             "item/commandExecution/outputDelta" => {
@@ -918,6 +947,98 @@ impl AppState {
             "thread/realtime/closed" => {
                 self.voice_active = false;
             }
+            "thread/realtime/started" => {
+                self.voice_active = true;
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    append_system_event(task, method, &params, "Realtime session started");
+                    persist = true;
+                }
+            }
+            "thread/realtime/itemAdded" => {
+                if let (Some(task), Some(item)) = (
+                    thread_id.and_then(|id| self.task_mut_by_id(id)),
+                    params.get("item"),
+                ) {
+                    if let Some(entry) = entry_from_server_item(item) {
+                        upsert_entry(task, entry);
+                    } else {
+                        append_system_event(task, method, &params, "Realtime item received");
+                    }
+                    persist = true;
+                }
+            }
+            "thread/realtime/outputAudio/delta" => {
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    append_tool_output(
+                        task,
+                        params
+                            .get("itemId")
+                            .and_then(Value::as_str)
+                            .unwrap_or("realtime-audio"),
+                        "[audio response received]",
+                    );
+                    persist = true;
+                }
+            }
+            "thread/realtime/sdp" => {
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    append_system_event(task, method, &params, "Realtime transport negotiated");
+                    persist = true;
+                }
+            }
+            "thread/compacted" | "thread/goal/cleared" => {
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    let text = if method == "thread/compacted" {
+                        "Conversation context compacted"
+                    } else {
+                        "Thread goal cleared"
+                    };
+                    append_system_event(task, method, &params, text);
+                    persist = true;
+                }
+            }
+            "thread/goal/updated" => {
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    let goal = params.get("goal").unwrap_or(&params);
+                    let objective = string_field(goal, &["objective"]);
+                    let status = string_field(goal, &["status"]);
+                    let detail = [objective, status]
+                        .into_iter()
+                        .filter(|value| !value.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    append_system_event(
+                        task,
+                        method,
+                        &params,
+                        if detail.is_empty() {
+                            "Thread goal updated"
+                        } else {
+                            &detail
+                        },
+                    );
+                    persist = true;
+                }
+            }
+            "thread/settings/updated" => {
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    let settings = params.get("threadSettings").unwrap_or(&params);
+                    let model = string_field(settings, &["model"]);
+                    if !model.is_empty() {
+                        task.model = model;
+                    }
+                    let reasoning = string_field(settings, &["effort", "reasoningEffort"]);
+                    if !reasoning.is_empty() {
+                        task.reasoning = reasoning;
+                    }
+                    let cwd = string_field(settings, &["cwd"]);
+                    if !cwd.is_empty() {
+                        task.path = cwd;
+                    }
+                    append_system_event(task, method, &params, "Thread settings updated");
+                    persist = true;
+                }
+            }
             "app/list/updated" => {
                 self.catalog.apps = named_values_from_data(&params, &["name", "displayName", "id"]);
                 self.catalog.installed_apps = self.catalog.apps.clone();
@@ -996,6 +1117,13 @@ impl AppState {
                         }
                     } else if let Some(client) = self.live_client.clone() {
                         let _ = client.respond(request_id, safe_server_request_response(method));
+                    }
+                } else if let Some(task) = self.task_mut_for_event(thread_id) {
+                    if let Some(entry) =
+                        generic_event_entry(method, &params, "", task.entries.len())
+                    {
+                        upsert_entry(task, entry);
+                        persist = true;
                     }
                 }
             }
@@ -2711,6 +2839,7 @@ fn event_thread_id(params: &Value) -> Option<&str> {
     params
         .get("threadId")
         .and_then(Value::as_str)
+        .or_else(|| params.get("conversationId").and_then(Value::as_str))
         .or_else(|| {
             params
                 .get("thread")
@@ -2782,6 +2911,107 @@ fn safe_server_request_response(method: &str) -> Value {
             "decision": { "denied": { "rejection": "Declined by user" } }
         }),
         _ => json!({}),
+    }
+}
+
+fn append_system_event(task: &mut Task, method: &str, params: &Value, text: &str) {
+    let id = event_entry_id(method, params, task.entries.len());
+    upsert_entry(
+        task,
+        Entry::System {
+            id,
+            text: text.to_owned(),
+        },
+    );
+}
+
+fn generic_event_entry(
+    method: &str,
+    params: &Value,
+    item_id: &str,
+    entry_index: usize,
+) -> Option<Entry> {
+    if method.is_empty() {
+        return None;
+    }
+    let id = if item_id.is_empty() {
+        event_entry_id(method, params, entry_index)
+    } else {
+        format!("event-{}-{item_id}", method.replace('/', "-"))
+    };
+    let label = method.replace('/', " · ");
+    let detail = notification_detail(params);
+    if method.contains("outputDelta") || method.contains("delta") {
+        Some(Entry::Tool {
+            id,
+            name: label,
+            status: "running".into(),
+            detail,
+            output: String::new(),
+        })
+    } else {
+        Some(Entry::System {
+            id,
+            text: if detail.is_empty() {
+                label
+            } else {
+                format!("{label}: {detail}")
+            },
+        })
+    }
+}
+
+fn event_entry_id(method: &str, params: &Value, entry_index: usize) -> String {
+    let correlation = string_field(
+        params,
+        &[
+            "itemId",
+            "turnId",
+            "reviewId",
+            "processId",
+            "processHandle",
+            "watchId",
+            "environmentId",
+        ],
+    );
+    if correlation.is_empty() {
+        format!("event-{}-{entry_index}", method.replace('/', "-"))
+    } else {
+        format!("event-{}-{correlation}", method.replace('/', "-"))
+    }
+}
+
+fn notification_detail(params: &Value) -> String {
+    for name in [
+        "message",
+        "reason",
+        "status",
+        "name",
+        "kind",
+        "mode",
+        "serverName",
+        "environmentId",
+        "reviewId",
+        "turnId",
+        "watchId",
+    ] {
+        if let Some(value) = params.get(name) {
+            let text = value_text(value);
+            if !text.is_empty() {
+                return truncate_text(&text, 240);
+            }
+        }
+    }
+    String::new()
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
     }
 }
 
@@ -3612,5 +3842,168 @@ mod tests {
             sandbox_policy_wire("danger-full-access"),
             "dangerFullAccess"
         );
+    }
+
+    #[test]
+    fn server_request_responses_preserve_each_official_contract() {
+        let command = PendingInteraction::from_event(
+            &json!({ "id": 1 }),
+            &json!({
+                "threadId": "thread-1",
+                "itemId": "item-1",
+                "command": "printf safe",
+                "availableDecisions": ["accept", "decline"]
+            }),
+            "item/commandExecution/requestApproval",
+        );
+        assert_eq!(command.kind, InteractionKind::CommandApproval);
+        assert_eq!(command.response(true), json!({ "decision": "accept" }));
+        assert_eq!(command.response(false), json!({ "decision": "decline" }));
+
+        let permissions = PendingInteraction::from_event(
+            &json!({ "id": 2 }),
+            &json!({
+                "threadId": "thread-1",
+                "itemId": "item-2",
+                "cwd": "/tmp",
+                "permissions": {
+                    "fileSystem": {
+                        "entries": [{
+                            "access": "write",
+                            "path": { "type": "path", "path": "/tmp" }
+                        }]
+                    }
+                }
+            }),
+            "item/permissions/requestApproval",
+        );
+        assert_eq!(
+            permissions.response(true)["permissions"]["fileSystem"]["entries"][0]["access"],
+            "write"
+        );
+        assert_eq!(
+            permissions.response(false),
+            json!({
+                "permissions": {},
+                "scope": "turn"
+            })
+        );
+
+        let input = PendingInteraction::from_event(
+            &json!({ "id": 3 }),
+            &json!({
+                "threadId": "thread-1",
+                "itemId": "item-3",
+                "isBlocking": true,
+                "questions": [{ "id": "q1", "header": "Choice", "question": "Pick one" }]
+            }),
+            "item/tool/requestUserInput",
+        );
+        assert_eq!(input.response(true), json!({ "answers": {} }));
+
+        let mcp = PendingInteraction::from_event(
+            &json!({ "id": 4 }),
+            &json!({
+                "threadId": "thread-1",
+                "serverName": "fixture",
+                "mode": "form",
+                "message": "Confirm"
+            }),
+            "mcpServer/elicitation/request",
+        );
+        assert_eq!(mcp.response(true), json!({ "action": "accept" }));
+        assert_eq!(mcp.response(false), json!({ "action": "cancel" }));
+
+        let dynamic = PendingInteraction::from_event(
+            &json!({ "id": 5 }),
+            &json!({
+                "threadId": "thread-1",
+                "callId": "call-1",
+                "tool": "fixture"
+            }),
+            "item/tool/call",
+        );
+        assert_eq!(
+            dynamic.response(true),
+            json!({ "success": false, "contentItems": [] })
+        );
+    }
+
+    #[test]
+    fn all_reference_notification_methods_have_a_safe_reducer_fallback() {
+        let methods = [
+            "account/login/completed",
+            "account/rateLimits/updated",
+            "account/updated",
+            "app/list/updated",
+            "autoApprovalReview/strictReviewRequired",
+            "command/exec/outputDelta",
+            "configWarning",
+            "deprecationNotice",
+            "error",
+            "externalAgentConfig/import/completed",
+            "externalAgentConfig/import/progress",
+            "fs/changed",
+            "fuzzyFileSearch/sessionCompleted",
+            "fuzzyFileSearch/sessionUpdated",
+            "guardianWarning",
+            "hook/completed",
+            "hook/started",
+            "item/autoApprovalReview/completed",
+            "item/autoApprovalReview/started",
+            "item/started",
+            "item/completed",
+            "mcpServer/oauthLogin/completed",
+            "mcpServer/startupStatus/updated",
+            "model/rerouted",
+            "model/safetyBuffering/updated",
+            "model/verification",
+            "process/exited",
+            "process/outputDelta",
+            "project/changed",
+            "remoteControl/status/changed",
+            "skills/changed",
+            "thread/archived",
+            "thread/closed",
+            "thread/compacted",
+            "thread/deleted",
+            "thread/environment/connected",
+            "thread/environment/disconnected",
+            "thread/goal/cleared",
+            "thread/goal/updated",
+            "thread/name/updated",
+            "thread/project/updated",
+            "thread/queue/changed",
+            "thread/realtime/closed",
+            "thread/realtime/error",
+            "thread/realtime/itemAdded",
+            "thread/realtime/outputAudio/delta",
+            "thread/realtime/sdp",
+            "thread/realtime/started",
+            "thread/realtime/transcript/delta",
+            "thread/realtime/transcript/done",
+            "thread/reverted",
+            "thread/settings/updated",
+            "thread/status/changed",
+            "thread/tokenUsage/updated",
+            "thread/unarchived",
+            "turn/completed",
+            "turn/diff/updated",
+            "turn/moderationMetadata",
+            "turn/plan/updated",
+            "turn/started",
+            "warning",
+            "windowsSandbox/setupCompleted",
+            "windows/worldWritableWarning",
+        ];
+        for method in methods {
+            let entry = generic_event_entry(
+                method,
+                &json!({ "threadId": "thread-1", "message": "fixture" }),
+                "",
+                0,
+            );
+            assert!(entry.is_some(), "missing fallback for {method}");
+        }
     }
 }

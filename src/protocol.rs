@@ -865,10 +865,19 @@ impl AppServerClient {
         self.request("project/update", Value::Object(params))
     }
 
-    pub fn config_value_write(&self, key_path: &[String], value: Value) -> Result<Value> {
+    pub fn config_value_write(
+        &self,
+        key_path: &str,
+        merge_strategy: &str,
+        value: Value,
+    ) -> Result<Value> {
         self.request(
             "config/value/write",
-            json!({ "keyPath": key_path, "value": value }),
+            json!({
+                "keyPath": key_path,
+                "mergeStrategy": merge_strategy,
+                "value": value,
+            }),
         )
     }
 
@@ -876,26 +885,51 @@ impl AppServerClient {
         self.request("config/mcpServer/reload", json!({}))
     }
 
-    pub fn marketplace_add(&self, name: &str, source: Value) -> Result<Value> {
-        self.request("marketplace/add", json!({ "name": name, "source": source }))
+    pub fn marketplace_add(
+        &self,
+        source: &str,
+        ref_name: Option<&str>,
+        sparse_paths: &[String],
+    ) -> Result<Value> {
+        let mut params = json!({ "source": source });
+        if let Some(ref_name) = ref_name.filter(|value| !value.is_empty()) {
+            params["refName"] = Value::String(ref_name.into());
+        }
+        if !sparse_paths.is_empty() {
+            params["sparsePaths"] = json!(sparse_paths);
+        }
+        self.request("marketplace/add", params)
     }
 
-    pub fn marketplace_remove(&self, name: &str) -> Result<Value> {
-        self.request("marketplace/remove", json!({ "name": name }))
+    pub fn marketplace_remove(&self, marketplace_name: &str) -> Result<Value> {
+        self.request(
+            "marketplace/remove",
+            json!({ "marketplaceName": marketplace_name }),
+        )
     }
 
-    pub fn marketplace_upgrade(&self, name: Option<&str>) -> Result<Value> {
+    pub fn marketplace_upgrade(&self, marketplace_name: Option<&str>) -> Result<Value> {
         let mut params = json!({});
-        if let Some(name) = name.filter(|value| !value.is_empty()) {
-            params["name"] = Value::String(name.into());
+        if let Some(marketplace_name) = marketplace_name.filter(|value| !value.is_empty()) {
+            params["marketplaceName"] = Value::String(marketplace_name.into());
         }
         self.request("marketplace/upgrade", params)
     }
 
-    pub fn plugin_install(&self, plugin_id: &str, marketplace: Option<&str>) -> Result<Value> {
-        let mut params = json!({ "pluginId": plugin_id });
-        if let Some(marketplace) = marketplace.filter(|value| !value.is_empty()) {
-            params["marketplace"] = Value::String(marketplace.into());
+    pub fn plugin_install(
+        &self,
+        plugin_name: &str,
+        marketplace_path: Option<&str>,
+        remote_marketplace_name: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({ "pluginName": plugin_name });
+        if let Some(marketplace_path) = marketplace_path.filter(|value| !value.is_empty()) {
+            params["marketplacePath"] = Value::String(marketplace_path.into());
+        }
+        if let Some(remote_marketplace_name) =
+            remote_marketplace_name.filter(|value| !value.is_empty())
+        {
+            params["remoteMarketplaceName"] = Value::String(remote_marketplace_name.into());
         }
         self.request("plugin/install", params)
     }
@@ -1181,6 +1215,93 @@ mod tests {
         assert_eq!(requests[2]["method"], "thread/realtime/start");
         assert_eq!(requests[3]["params"]["text"], "voice");
         assert_eq!(requests[4]["method"], "thread/realtime/stop");
+    }
+
+    #[test]
+    fn extended_reference_methods_emit_required_v2_wire_fields() {
+        let input = (1..=64)
+            .map(|id| format!(r#"{{"id":{id},"result":{{}}}}"#))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let recorded = RecordingWriter::default();
+        let bytes = recorded.0.clone();
+        let client = AppServerClient::from_parts(Cursor::new(input.into_bytes()), recorded);
+        client
+            .thread_items_list("thread-1", Some("turn-1"), Some("cursor"), Some(20))
+            .unwrap();
+        client
+            .thread_turns_list("thread-1", Some("cursor"), Some(20), Some("full"))
+            .unwrap();
+        client.thread_search("needle", Some(true)).unwrap();
+        client
+            .thread_search_occurrences("thread-1", "needle", Some("cursor"), Some(10))
+            .unwrap();
+        client.thread_goal_get("thread-1").unwrap();
+        client
+            .thread_goal_set("thread-1", Some("ship"), Some("inProgress"), Some(1000))
+            .unwrap();
+        client.thread_goal_clear("thread-1").unwrap();
+        client
+            .thread_settings_update("thread-1", json!({ "model": "gpt-test" }))
+            .unwrap();
+        client
+            .thread_metadata_update("thread-1", json!({ "projectId": "project-1" }))
+            .unwrap();
+        client
+            .thread_memory_mode_set("thread-1", "enabled")
+            .unwrap();
+        client.thread_revert("thread-1", "turn-1").unwrap();
+        client.thread_rollback("thread-1", 1).unwrap();
+        client
+            .apps_read(&[String::from("app-1")], Some("thread-1"))
+            .unwrap();
+        client.account_rate_limits_read().unwrap();
+        client.account_usage_read().unwrap();
+        client.realtime_append_speech("thread-1", "hello").unwrap();
+        client
+            .realtime_append_audio("thread-1", json!({ "data": "AA==" }))
+            .unwrap();
+        client.realtime_list_voices().unwrap();
+        client.project_list(Some(10), Some("cursor")).unwrap();
+        client.project_read("project-1").unwrap();
+        client
+            .project_create("idempotency-1", "Project", json!([]))
+            .unwrap();
+        client
+            .project_update("project-1", json!({ "name": "Updated" }))
+            .unwrap();
+        client
+            .config_value_write("approval_policy", "replace", json!("never"))
+            .unwrap();
+        client.config_mcp_server_reload().unwrap();
+        client
+            .marketplace_add("https://example.invalid/marketplace", Some("main"), &[])
+            .unwrap();
+        client.marketplace_remove("main").unwrap();
+        client.marketplace_upgrade(Some("main")).unwrap();
+        client
+            .plugin_install("plugin-name", Some("/tmp/marketplace"), Some("main"))
+            .unwrap();
+        client.plugin_uninstall("plugin-1").unwrap();
+
+        let requests = String::from_utf8(bytes.lock().unwrap().clone())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(requests.len(), 29);
+        assert_eq!(requests[0]["method"], "thread/items/list");
+        assert_eq!(requests[0]["params"]["turnId"], "turn-1");
+        assert_eq!(requests[1]["method"], "thread/turns/list");
+        assert_eq!(requests[2]["method"], "thread/search");
+        assert_eq!(requests[2]["params"]["archived"], true);
+        assert_eq!(requests[6]["method"], "thread/goal/clear");
+        assert_eq!(requests[7]["params"]["threadId"], "thread-1");
+        assert_eq!(requests[12]["method"], "app/read");
+        assert_eq!(requests[22]["params"]["mergeStrategy"], "replace");
+        assert_eq!(requests[25]["params"]["marketplaceName"], "main");
+        assert_eq!(requests[27]["params"]["pluginName"], "plugin-name");
     }
 
     #[test]
