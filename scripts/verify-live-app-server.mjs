@@ -52,6 +52,24 @@ try {
   child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
   const listed = await send("thread/list", { limit: 10, archived: false });
   if (!initialized || !listed || !Array.isArray(listed.data)) throw new Error("unexpected app-server response shape");
+  const [models, permissions, modes, apps, installed, plugins, skills, mcp, account, config] = await Promise.all([
+    send("model/list", { limit: 10 }),
+    send("permissionProfile/list", { cwd: stateHome, limit: 10 }),
+    send("collaborationMode/list"),
+    send("app/list", { limit: 10 }),
+    send("app/installed"),
+    send("plugin/list"),
+    send("skills/list", { cwds: [stateHome] }),
+    send("mcpServerStatus/list"),
+    send("account/read"),
+    send("config/read", { cwd: stateHome, includeLayers: false }),
+  ]);
+  if (!Array.isArray(models?.data) || !Array.isArray(permissions?.data) || !Array.isArray(modes?.data)) {
+    throw new Error("catalog responses were not arrays");
+  }
+  if (!Array.isArray(apps?.data) || !Array.isArray(installed?.apps) || !plugins || !skills?.data || !mcp?.data || !account || !config?.config) {
+    throw new Error("secondary app-server catalog response shape was incomplete");
+  }
   const started = await send("thread/start", { cwd: stateHome });
   const threadId = started?.thread?.id;
   if (typeof threadId !== "string" || !threadId) throw new Error("thread/start did not return a thread id");

@@ -433,6 +433,37 @@ impl AppState {
                     persist = true;
                 }
             }
+            "thread/reverted" => {
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    task.status = "idle".into();
+                    task.entries.push(Entry::System {
+                        id: format!("reverted-{}", task.entries.len()),
+                        text: "Thread reverted to the selected checkpoint".into(),
+                    });
+                    persist = true;
+                }
+            }
+            "thread/environment/connected" | "thread/environment/disconnected" => {
+                if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
+                    let connected = method == "thread/environment/connected";
+                    task.entries.push(Entry::System {
+                        id: format!("environment-{}-{}", task.entries.len(), connected),
+                        text: format!(
+                            "Execution environment {}{}",
+                            if connected {
+                                "connected"
+                            } else {
+                                "disconnected"
+                            },
+                            params
+                                .get("environmentId")
+                                .map(|value| format!(": {}", value_text(value)))
+                                .unwrap_or_default()
+                        ),
+                    });
+                    persist = true;
+                }
+            }
             "turn/started" => {
                 if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
                     task.status = "running".into();
@@ -496,6 +527,26 @@ impl AppState {
                             })
                         })
                         .collect();
+                    persist = true;
+                }
+            }
+            "item/plan/delta" => {
+                if let (Some(task), Some(delta)) = (
+                    thread_id.and_then(|id| self.task_mut_by_id(id)),
+                    params.get("delta").and_then(Value::as_str),
+                ) {
+                    upsert_entry(
+                        task,
+                        Entry::Reasoning {
+                            id: params
+                                .get("itemId")
+                                .and_then(Value::as_str)
+                                .unwrap_or("plan-delta")
+                                .into(),
+                            text: delta.into(),
+                            collapsed: false,
+                        },
+                    );
                     persist = true;
                 }
             }
@@ -718,6 +769,28 @@ impl AppState {
             "thread/realtime/closed" => {
                 self.voice_active = false;
             }
+            "app/list/updated" => {
+                self.catalog.apps = named_values_from_data(&params, &["name", "displayName", "id"]);
+                self.catalog.installed_apps = self.catalog.apps.clone();
+            }
+            "mcpServer/startupStatus/updated" => {
+                if let Some(name) = params.get("name").and_then(Value::as_str) {
+                    if !self.catalog.mcp_servers.iter().any(|server| server == name) {
+                        self.catalog.mcp_servers.push(name.into());
+                    }
+                }
+            }
+            "account/updated" => {
+                let auth = string_field(&params, &["authMode"]);
+                let plan = string_field(&params, &["planType"]);
+                let label = [auth, plan]
+                    .into_iter()
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>();
+                if !label.is_empty() {
+                    self.catalog.account_label = Some(label.join(" · "));
+                }
+            }
             "model/rerouted" => {
                 if let Some(task) = thread_id.and_then(|id| self.task_mut_by_id(id)) {
                     let from = string_field(&params, &["fromModel"]);
@@ -769,6 +842,12 @@ impl AppState {
                     }
                 }
             }
+        }
+        if matches!(
+            method,
+            "skills/changed" | "project/changed" | "thread/project/updated"
+        ) {
+            self.refresh_catalog(cx);
         }
         if persist {
             self.persist(cx);
@@ -1041,12 +1120,39 @@ impl AppState {
         self.menu_open = false;
         self.app_menu = None;
         self.view_open = false;
+        self.refresh_catalog(cx);
         cx.notify();
     }
 
     pub fn select_settings_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
         self.settings_page = page;
+        self.refresh_catalog(cx);
         cx.notify();
+    }
+
+    pub fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.live_client.clone() else {
+            return;
+        };
+        let cwd = self.current_task().map(|task| task.path.clone());
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let catalog = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || ServerCatalog::from_client(&client, cwd.as_deref()))
+                            .await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| {
+                    this.catalog = catalog;
+                    this.normalize_catalog_defaults();
+                    cx.notify();
+                });
+            },
+        )
+        .detach();
     }
 
     pub fn toggle_project(&mut self, project_id: String, cx: &mut Context<Self>) {

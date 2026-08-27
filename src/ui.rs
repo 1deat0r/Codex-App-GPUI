@@ -1897,8 +1897,8 @@ fn destination_card(
 }
 
 fn empty_destination_card(
-    id: &'static str,
-    message: &'static str,
+    id: impl Into<String>,
+    message: impl Into<String>,
     action: Option<(String, Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>)>,
 ) -> Stateful<Div> {
     destination_card(
@@ -1968,9 +1968,10 @@ fn sites_view(state: &AppState, window: &mut Window, cx: &mut Context<AppState>)
         .catalog
         .apps
         .iter()
-        .map(|app| {
+        .enumerate()
+        .map(|(index, app)| {
             empty_destination_card(
-                "site-available",
+                format!("site-available-{index}"),
                 "Connected app surface",
                 Some((
                     app.clone(),
@@ -2366,6 +2367,17 @@ fn settings_page_body(
                     format!("{} app-backed surface(s)", state.catalog.apps.len())
                 },
                 None,
+            ))
+            .child(setting_row(
+                "Refresh catalog",
+                "Reload apps and connector metadata",
+                "↻".into(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.refresh_catalog(cx);
+                    },
+                ))),
             )),
         SettingsPage::Mcp => div()
             .flex()
@@ -2397,6 +2409,17 @@ fn settings_page_body(
                 "Configure an MCP server",
                 "＋".into(),
                 None,
+            ))
+            .child(setting_row(
+                "Refresh servers",
+                "Reload MCP status from Codex",
+                "↻".into(),
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.refresh_catalog(cx);
+                    },
+                ))),
             )),
         SettingsPage::Skills => div()
             .flex()
@@ -2416,7 +2439,12 @@ fn settings_page_body(
                 "Refresh",
                 "Reload skill metadata",
                 "↻".into(),
-                None,
+                Some(Box::new(window.listener_for(
+                    &cx.entity(),
+                    |this, _event, _window, cx| {
+                        this.refresh_catalog(cx);
+                    },
+                ))),
             )),
         SettingsPage::Plugins => div()
             .flex()
