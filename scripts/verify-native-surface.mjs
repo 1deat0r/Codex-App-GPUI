@@ -48,6 +48,7 @@ const settingsControls = [
   "Always fetch upstream before creating worktrees", "Automatically delete old worktrees",
   "Auto-delete limit", "New chat in this worktree", "Add server", "Extra skill folders",
   "Add skill folder", "Refresh servers", "Search catalog", "Marketplaces", "Voice input",
+  "Choose an answer for each question", "Submit answers",
 ];
 const stateHandlers = [
   "set_route", "refresh_pull_requests", "open_app", "create_automation", "run_automation",
@@ -56,7 +57,7 @@ const stateHandlers = [
   "fork_current_in_new_worktree", "share_current", "review_current", "open_diff_path",
   "copy_diff_path", "begin_mcp_server_edit", "add_mcp_server_from_json", "pick_skill_root",
   "pick_projectless_task_folder", "start_account_login", "logout_account", "refresh_account",
-  "stop_all_background_terminals",
+  "stop_all_background_terminals", "select_user_input_answer", "submit_user_input",
 ];
 const protocolMethods = [
   "thread/list", "thread/read", "thread/start", "thread/fork", "thread/resume",

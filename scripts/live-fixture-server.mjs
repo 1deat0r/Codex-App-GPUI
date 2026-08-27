@@ -209,7 +209,10 @@ function validContractResponse(method, result) {
     case "item/permissions/requestApproval":
       return result.permissions && typeof result.permissions === "object" && !("decision" in result);
     case "item/tool/requestUserInput":
-      return result.answers && typeof result.answers === "object";
+      return result.answers
+        && typeof result.answers === "object"
+        && Array.isArray(result.answers["fixture-question"]?.answers)
+        && result.answers["fixture-question"].answers.includes("Yes");
     case "mcpServer/elicitation/request":
       return ["accept", "decline", "cancel"].includes(result.action);
     case "item/tool/call":

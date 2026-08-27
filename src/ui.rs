@@ -4,12 +4,13 @@
 
 use std::path::Path;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::model::{Entry, Route, SettingsPage, Task};
 use crate::state::{
-    child_status_counts, format_tokens, plan_progress, AppMenu, AppState, InteractionKind,
-    CONTENT_LAYOUTS,
+    child_status_counts, format_tokens, pending_interaction_key, plan_progress, AppMenu, AppState,
+    InteractionKind, PendingInteraction, CONTENT_LAYOUTS,
 };
 use crate::theme;
 
@@ -1939,6 +1940,7 @@ fn entry_view(
         } => {
             let requested = *requested;
             let approval_id = id.clone();
+            let is_user_input = approval_kind == "item/tool/requestUserInput";
             let interactive =
                 InteractionKind::from_method(approval_kind).can_render_decision_buttons();
             let allow_label = if approval_kind == "item/permissions/requestApproval" {
@@ -1954,6 +1956,15 @@ fn entry_view(
                 "Cancel"
             } else {
                 "Deny"
+            };
+            let input_controls = if requested && is_user_input {
+                state
+                    .pending_interactions
+                    .iter()
+                    .find(|pending| pending_interaction_key(pending) == approval_id)
+                    .map(|pending| user_input_controls(&approval_id, pending, state, window, cx))
+            } else {
+                None
             };
             div()
                 .id(ElementId::Name(format!("entry-approval-{id}").into()))
@@ -2019,7 +2030,8 @@ fn entry_view(
                             .child(choice.clone())
                     }))
                 }))
-                .children((requested && interactive).then(|| {
+                .children(input_controls)
+                .children((requested && interactive && !is_user_input).then(|| {
                     div()
                         .flex()
                         .gap_2()
@@ -2082,6 +2094,132 @@ fn entry_view(
             .text_color(theme::text_faint())
             .child(text.clone()),
     }
+}
+
+fn user_input_controls(
+    approval_id: &str,
+    pending: &PendingInteraction,
+    state: &AppState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) -> Stateful<Div> {
+    let request_key = approval_id.to_owned();
+    let questions = pending.user_input_questions();
+    let question_views = questions
+        .into_iter()
+        .enumerate()
+        .map(|(question_index, question)| {
+            let question_id = question.id.clone();
+            let selected = state
+                .interaction_answers
+                .get(approval_id)
+                .and_then(|answers| answers.get(&question.id))
+                .cloned()
+                .unwrap_or_default();
+            let has_options = !question.options.is_empty();
+            let option_views =
+                question
+                    .options
+                    .into_iter()
+                    .enumerate()
+                    .map(|(option_index, option)| {
+                        let answer = option.label.clone();
+                        let selected = selected.iter().any(|value| value == &answer);
+                        let request_key = request_key.clone();
+                        let question_id = question_id.clone();
+                        let option_id = format!(
+                            "user-input-option-{question_index}-{option_index}-{}",
+                            answer.replace(' ', "-")
+                        );
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(text_button(
+                                ElementId::Name(option_id.into()),
+                                &option.label,
+                                window.listener_for(
+                                    &cx.entity(),
+                                    move |this, _event, _window, cx| {
+                                        this.select_user_input_answer(
+                                            &request_key,
+                                            &question_id,
+                                            &answer,
+                                            cx,
+                                        );
+                                    },
+                                ),
+                            ))
+                            .children((!option.description.is_empty()).then(|| {
+                                div()
+                                    .text_size(rems(0.66))
+                                    .text_color(theme::text_faint())
+                                    .child(option.description)
+                            }))
+                            .when(selected, |view| view.bg(theme::bg_selected()))
+                    });
+            div()
+                .id(ElementId::Name(
+                    format!("user-input-question-{question_index}").into(),
+                ))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(rems(0.72))
+                        .text_color(theme::text())
+                        .child(question.header),
+                )
+                .children((!question.question.is_empty()).then(|| {
+                    div()
+                        .text_size(rems(0.68))
+                        .text_color(theme::text_muted())
+                        .child(question.question)
+                }))
+                .children(option_views)
+                .children((!has_options).then(|| {
+                    div()
+                        .text_size(rems(0.66))
+                        .text_color(theme::text_faint())
+                        .child("No selectable options")
+                }))
+        });
+    let submit_key = request_key.clone();
+    let cancel_key = request_key.clone();
+    div()
+        .id(ElementId::Name(
+            format!("user-input-controls-{approval_id}").into(),
+        ))
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .text_size(rems(0.68))
+                .text_color(theme::text_muted())
+                .child("Choose an answer for each question"),
+        )
+        .children(question_views)
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .child(text_button(
+                    ElementId::Name(format!("user-input-submit-{approval_id}").into()),
+                    "Submit answers",
+                    window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                        this.submit_user_input(&submit_key, cx);
+                    }),
+                ))
+                .child(text_button(
+                    ElementId::Name(format!("user-input-cancel-{approval_id}").into()),
+                    "Cancel",
+                    window.listener_for(&cx.entity(), move |this, _event, _window, cx| {
+                        this.approve_interaction(&cancel_key, false, cx);
+                    }),
+                )),
+        )
 }
 
 fn streaming_status() -> Stateful<Div> {

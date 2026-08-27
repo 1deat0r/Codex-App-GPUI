@@ -3,86 +3,64 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import readline from "node:readline";
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const executable = path.join(repositoryRoot, "target", "debug", "codex-app-gpui");
 const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-app-gpui-codex-home-"));
 const stateHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-app-gpui-state-"));
-const child = spawn("codex", ["app-server", "--stdio"], {
-  env: { ...process.env, CODEX_HOME: codexHome, CODEX_APP_GPUI_HOME: stateHome },
-  stdio: ["pipe", "pipe", "pipe"],
-});
-const pending = new Map();
-let nextId = 1;
+let child;
+let stdout = "";
 let stderr = "";
-child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
-const input = readline.createInterface({ input: child.stdout });
-input.on("line", (line) => {
-  if (!line.trim().startsWith("{")) return;
-  const message = JSON.parse(line);
-  if (typeof message.id === "number" && !message.method) {
-    const waiter = pending.get(message.id);
-    if (!waiter) return;
-    pending.delete(message.id);
-    if (message.error) waiter.reject(new Error(JSON.stringify(message.error)));
-    else waiter.resolve(message.result ?? null);
-  }
-});
 
-function send(method, params = {}) {
-  const id = nextId++;
+function ensureExecutable() {
+  if (fs.existsSync(executable)) return;
+  const result = spawnSync(process.execPath, ["scripts/run-cargo.mjs", "build", "--locked"], {
+    cwd: repositoryRoot,
+    stdio: "inherit",
+  });
+  if (result.status !== 0 || !fs.existsSync(executable)) {
+    throw new Error("could not build the native live-smoke executable");
+  }
+}
+
+function waitForClose(processHandle) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error(`timeout waiting for ${method}`));
-    }, 8000);
-    pending.set(id, {
-      resolve: (value) => { clearTimeout(timer); resolve(value); },
-      reject: (error) => { clearTimeout(timer); reject(error); },
-    });
-    child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+    processHandle.once("error", reject);
+    processHandle.once("close", (code, signal) => resolve({ code, signal }));
   });
 }
 
 try {
-  const initialized = await send("initialize", {
-    clientInfo: { name: "codex_app_gpui_parity", title: "Codex App GPUI parity verifier", version: "0.1.0" },
-    capabilities: { experimentalApi: true },
+  ensureExecutable();
+  child = spawn(executable, ["--live-smoke"], {
+    cwd: repositoryRoot,
+    env: {
+      ...process.env,
+      CODEX_HOME: codexHome,
+      CODEX_APP_GPUI_HOME: stateHome,
+      CODEX_APP_GPUI_CREATE_LIVE_THREAD: "1",
+      CODEX_APP_SERVER_COMMAND: "codex app-server --stdio",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
-  const listed = await send("thread/list", { limit: 10, archived: false });
-  if (!initialized || !listed || !Array.isArray(listed.data)) throw new Error("unexpected app-server response shape");
-  const [models, permissions, modes, apps, installed, plugins, skills, mcp, account, config, hooks] = await Promise.all([
-    send("model/list", { limit: 10 }),
-    send("permissionProfile/list", { cwd: stateHome, limit: 10 }),
-    send("collaborationMode/list"),
-    send("app/list", { limit: 10 }),
-    send("app/installed"),
-    send("plugin/list"),
-    send("skills/list", { cwds: [stateHome] }),
-    send("mcpServerStatus/list"),
-    send("account/read"),
-    send("config/read", { cwd: stateHome, includeLayers: false }),
-    send("hooks/list", { cwds: [stateHome] }),
-  ]);
-  if (!Array.isArray(models?.data) || !Array.isArray(permissions?.data) || !Array.isArray(modes?.data)) {
-    throw new Error("catalog responses were not arrays");
+  child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+  const closed = await waitForClose(child);
+  const marker = stdout.match(/PARITY_100_LIVE_CLIENT_OK[^\r\n]*/)?.[0];
+  if (closed.code !== 0 || !marker) {
+    const details = [stdout.trim(), stderr.trim()].filter(Boolean).join(" ");
+    throw new Error(`native live client failed with status ${closed.code}: ${details}`.trim());
   }
-  if (!Array.isArray(apps?.data) || !Array.isArray(installed?.apps) || !plugins || !skills?.data || !mcp?.data || !account || !config?.config || !Array.isArray(hooks?.data)) {
-    throw new Error("secondary app-server catalog response shape was incomplete");
-  }
-  if (apps.data.length > 0) {
-    const details = await send("app/read", { appIds: [apps.data[0].id], includeTools: true });
-    if (!Array.isArray(details?.apps)) throw new Error("app/read did not return apps");
-  }
-  const started = await send("thread/start", { cwd: stateHome });
-  const threadId = started?.thread?.id;
-  if (typeof threadId !== "string" || !threadId) throw new Error("thread/start did not return a thread id");
-  child.stdin.end();
-  await new Promise((resolve) => child.once("close", resolve));
-  console.log(`PARITY_100_LIVE_OK thread=${threadId} isolated=${codexHome}`);
+  if (!/thread=\S+/.test(marker)) throw new Error("native live client did not report a thread id");
+  console.log(`${marker} isolated=true`);
+  console.log("PARITY_100_LIVE_OK");
 } catch (error) {
-  console.error(`PARITY_100_LIVE_FAIL ${error.message}${stderr ? ` stderr=${stderr.trim()}` : ""}`);
-  child.kill("SIGTERM");
-  process.exit(1);
+  if (child && child.exitCode === null) child.kill("SIGTERM");
+  console.error(`PARITY_100_LIVE_FAIL ${error.message}`);
+  process.exitCode = 1;
+} finally {
+  fs.rmSync(codexHome, { recursive: true, force: true });
+  fs.rmSync(stateHome, { recursive: true, force: true });
 }

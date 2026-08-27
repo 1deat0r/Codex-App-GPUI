@@ -1,6 +1,6 @@
 //! UI state and interaction reducer for the native client.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -288,6 +288,21 @@ pub struct PendingInteraction {
     pub params: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserInputOption {
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserInputQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub options: Vec<UserInputOption>,
+    pub allow_multiple: bool,
+}
+
 impl PendingInteraction {
     fn from_event(event: &Value, params: &Value, method: &str) -> Self {
         let kind = InteractionKind::from_method(method);
@@ -338,6 +353,64 @@ impl PendingInteraction {
         }
     }
 
+    pub fn user_input_questions(&self) -> Vec<UserInputQuestion> {
+        if self.kind != InteractionKind::UserInput {
+            return Vec::new();
+        }
+        let Some(questions) = self.params.get("questions").and_then(Value::as_array) else {
+            return Vec::new();
+        };
+        questions
+            .iter()
+            .enumerate()
+            .map(|(index, question)| {
+                let options = question
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|option| {
+                                let label = match option {
+                                    Value::String(value) => value.clone(),
+                                    _ => string_field(option, &["label", "value", "name"]),
+                                };
+                                (!label.is_empty()).then(|| UserInputOption {
+                                    label,
+                                    description: string_field(option, &["description", "detail"]),
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let id = string_field(question, &["id"]);
+                let header = string_field(question, &["header", "title"]);
+                UserInputQuestion {
+                    id: if id.is_empty() {
+                        format!("question-{}", index + 1)
+                    } else {
+                        id
+                    },
+                    header: if header.is_empty() {
+                        format!("Question {}", index + 1)
+                    } else {
+                        header
+                    },
+                    question: string_field(question, &["question", "prompt", "text"]),
+                    options,
+                    allow_multiple: [
+                        "allowMultipleSelections",
+                        "allowsMultipleSelections",
+                        "multiple",
+                    ]
+                    .iter()
+                    .find_map(|key| question.get(*key).and_then(Value::as_bool))
+                    .unwrap_or(false),
+                }
+            })
+            .collect()
+    }
+
     pub fn response(&self, approved: bool) -> Value {
         match self.kind {
             InteractionKind::CommandApproval | InteractionKind::FileChangeApproval => {
@@ -363,32 +436,8 @@ impl PendingInteraction {
                 }
             }
             InteractionKind::UserInput => {
-                let mut answers = serde_json::Map::new();
-                if approved {
-                    if let Some(questions) = self.params.get("questions").and_then(Value::as_array)
-                    {
-                        for question in questions {
-                            let Some(id) = question.get("id").and_then(Value::as_str) else {
-                                continue;
-                            };
-                            let answer = question
-                                .get("options")
-                                .and_then(Value::as_array)
-                                .and_then(|options| options.first())
-                                .and_then(|option| {
-                                    option
-                                        .get("label")
-                                        .or_else(|| option.get("value"))
-                                        .and_then(Value::as_str)
-                                })
-                                .unwrap_or("");
-                            if !answer.is_empty() {
-                                answers.insert(id.into(), json!({ "answers": [answer] }));
-                            }
-                        }
-                    }
-                }
-                json!({ "answers": answers })
+                let _ = approved;
+                json!({ "answers": {} })
             }
             InteractionKind::McpElicitation => json!({
                 "action": if approved { "accept" } else { "cancel" }
@@ -407,9 +456,36 @@ impl PendingInteraction {
             InteractionKind::Unknown => safe_server_request_response(&self.method),
         }
     }
+
+    pub fn response_with_answers(&self, selected: &HashMap<String, Vec<String>>) -> Value {
+        if self.kind != InteractionKind::UserInput {
+            return self.response(true);
+        }
+        let mut answers = serde_json::Map::new();
+        for question in self.user_input_questions() {
+            let Some(values) = selected.get(&question.id) else {
+                continue;
+            };
+            let values = values
+                .iter()
+                .filter(|value| {
+                    question.options.is_empty()
+                        || question
+                            .options
+                            .iter()
+                            .any(|option| &option.label == *value)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !values.is_empty() {
+                answers.insert(question.id, json!({ "answers": values }));
+            }
+        }
+        json!({ "answers": answers })
+    }
 }
 
-fn pending_interaction_key(pending: &PendingInteraction) -> String {
+pub(crate) fn pending_interaction_key(pending: &PendingInteraction) -> String {
     if pending.item_id.is_empty() {
         format!("request-{}", value_text(&pending.request_id))
     } else {
@@ -460,6 +536,7 @@ pub struct AppState {
     pub active_turn_id: Option<String>,
     pub pending_interaction: Option<PendingInteraction>,
     pub pending_interactions: Vec<PendingInteraction>,
+    pub interaction_answers: HashMap<String, HashMap<String, Vec<String>>>,
     pub github: GitHubState,
     pub worktrees: Vec<WorktreeSummary>,
     pub rename_open: bool,
@@ -516,6 +593,7 @@ impl AppState {
             active_turn_id: None,
             pending_interaction: None,
             pending_interactions: Vec::new(),
+            interaction_answers: HashMap::new(),
             github: GitHubState {
                 status: "Not loaded".into(),
                 ..GitHubState::default()
@@ -813,6 +891,7 @@ impl AppState {
                     self.active_turn_id = None;
                     self.pending_interaction = None;
                     self.pending_interactions.clear();
+                    self.interaction_answers.clear();
                     if let Some(task) = self.current_task_mut() {
                         for entry in &mut task.entries {
                             if let Entry::Approval { requested, .. } = entry {
@@ -1280,6 +1359,7 @@ impl AppState {
                             removed.thread_id.clone()
                         };
                         let interaction_id = pending_interaction_key(&removed);
+                        self.interaction_answers.remove(&interaction_id);
                         if let Some(task) = self.task_mut_by_id(&task_id) {
                             for entry in &mut task.entries {
                                 if let Entry::Approval { id, requested, .. } = entry {
@@ -3891,7 +3971,95 @@ impl AppState {
         else {
             return;
         };
-        self.approve_interaction(&interaction_id, approved, cx);
+        if approved
+            && self
+                .pending_interaction
+                .as_ref()
+                .is_some_and(|pending| pending.kind == InteractionKind::UserInput)
+        {
+            self.submit_user_input(&interaction_id, cx);
+        } else {
+            self.approve_interaction(&interaction_id, approved, cx);
+        }
+    }
+
+    pub fn select_user_input_answer(
+        &mut self,
+        interaction_id: &str,
+        question_id: &str,
+        answer: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(question) = self
+            .pending_interactions
+            .iter()
+            .find(|pending| pending_interaction_key(pending) == interaction_id)
+            .filter(|pending| pending.kind == InteractionKind::UserInput)
+            .and_then(|pending| {
+                pending
+                    .user_input_questions()
+                    .into_iter()
+                    .find(|question| question.id == question_id)
+            })
+        else {
+            return;
+        };
+        if !question.options.iter().any(|option| option.label == answer) {
+            return;
+        }
+        let interaction_answers = self
+            .interaction_answers
+            .entry(interaction_id.to_owned())
+            .or_default();
+        let selected = interaction_answers
+            .entry(question_id.to_owned())
+            .or_default();
+        if question.allow_multiple {
+            if let Some(index) = selected.iter().position(|value| value == answer) {
+                selected.remove(index);
+            } else {
+                selected.push(answer.to_owned());
+            }
+        } else {
+            selected.clear();
+            selected.push(answer.to_owned());
+        }
+        cx.notify();
+    }
+
+    pub fn submit_user_input(&mut self, interaction_id: &str, cx: &mut Context<Self>) {
+        let Some(pending) = self
+            .pending_interactions
+            .iter()
+            .find(|pending| pending_interaction_key(pending) == interaction_id)
+            .cloned()
+        else {
+            return;
+        };
+        if pending.kind != InteractionKind::UserInput {
+            return;
+        }
+        let selected = self
+            .interaction_answers
+            .get(interaction_id)
+            .cloned()
+            .unwrap_or_default();
+        let missing = pending
+            .user_input_questions()
+            .iter()
+            .any(|question| !question.options.is_empty() && !selected.contains_key(&question.id));
+        if missing {
+            self.fail("Select an answer for each question before submitting", cx);
+            return;
+        }
+        let response = pending.response_with_answers(&selected);
+        self.resolve_interaction(
+            interaction_id,
+            response,
+            "Answered",
+            "Answers submitted",
+            cx,
+        );
     }
 
     pub fn approve_interaction(
@@ -3907,14 +4075,50 @@ impl AppState {
         else {
             return;
         };
-        let pending = self.pending_interactions.remove(index);
+        let pending = self.pending_interactions[index].clone();
+        self.resolve_interaction(
+            interaction_id,
+            pending.response(approved),
+            if approved { "Approved" } else { "Declined" },
+            if approved {
+                "Approval accepted"
+            } else {
+                "Approval declined"
+            },
+            cx,
+        );
+    }
+
+    fn resolve_interaction(
+        &mut self,
+        interaction_id: &str,
+        response: Value,
+        resolution_label: &str,
+        toast: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self
+            .pending_interactions
+            .iter()
+            .position(|pending| pending_interaction_key(pending) == interaction_id)
+        else {
+            return;
+        };
+        let pending = self.pending_interactions[index].clone();
+        if let Some(client) = self.live_client.clone() {
+            if let Err(error) = client.respond(pending.request_id.clone(), response) {
+                self.fail(&format!("Approval response failed: {error}"), cx);
+                return;
+            }
+        }
+        self.pending_interactions.remove(index);
+        self.interaction_answers.remove(interaction_id);
         let task_id = if pending.thread_id.is_empty() {
             self.selected_task.clone()
         } else {
             pending.thread_id.clone()
         };
         if let Some(task) = self.task_mut_by_id(&task_id) {
-            let label = if approved { "Approved" } else { "Declined" };
             for entry in &mut task.entries {
                 if let Entry::Approval { id, requested, .. } = entry {
                     if id == interaction_id {
@@ -3924,25 +4128,12 @@ impl AppState {
             }
             task.entries.push(Entry::System {
                 id: format!("approval-{}", task.entries.len()),
-                text: format!("{label} by user"),
+                text: format!("{resolution_label} by user"),
             });
-        }
-        if let Some(client) = self.live_client.clone() {
-            let response = pending.response(approved);
-            if let Err(error) = client.respond(pending.request_id, response) {
-                self.fail(&format!("Approval response failed: {error}"), cx);
-            }
         }
         self.promote_pending_interaction();
         self.persist(cx);
-        self.notify_success(
-            if approved {
-                "Approval accepted"
-            } else {
-                "Approval declined"
-            },
-            cx,
-        );
+        self.notify_success(toast, cx);
     }
 
     pub fn toggle_bool_setting(&mut self, setting: &str, cx: &mut Context<Self>) {
@@ -4395,9 +4586,11 @@ impl AppState {
         self.selection_anchor = None;
     }
 
-    fn persist(&mut self, _cx: &mut Context<Self>) {
+    fn persist(&mut self, cx: &mut Context<Self>) {
         self.save_current_draft();
-        let _ = persistence::save(&self.snapshot());
+        if let Err(error) = persistence::save(&self.snapshot()) {
+            self.fail(&format!("Could not save Codex App GPUI state: {error}"), cx);
+        }
     }
 
     pub fn notify_success(&mut self, message: &str, cx: &mut Context<Self>) {
@@ -4716,6 +4909,25 @@ fn connect_live(
     }
     let catalog = ServerCatalog::from_client(&client, cwd);
     Ok((client, threads, catalog))
+}
+
+pub(crate) fn connect_live_smoke(
+    command: &str,
+    cwd: Option<&str>,
+) -> anyhow::Result<(String, usize, usize, usize)> {
+    let (client, threads, catalog) = connect_live(command, cwd)?;
+    let thread_id = threads
+        .first()
+        .map(|thread| thread.id.clone())
+        .ok_or_else(|| anyhow::anyhow!("live app-server returned no threads"))?;
+    let counts = (
+        thread_id,
+        threads.len(),
+        catalog.models.len(),
+        catalog.apps.len(),
+    );
+    drop(client);
+    Ok(counts)
 }
 
 fn merge_threads(existing: &mut Vec<ServerThread>, additional: Vec<ServerThread>) {
@@ -6367,6 +6579,53 @@ mod tests {
             "item/tool/requestUserInput",
         );
         assert_eq!(input.response(true), json!({ "answers": {} }));
+
+        let input_with_options = PendingInteraction::from_event(
+            &json!({ "id": 6 }),
+            &json!({
+                "threadId": "thread-1",
+                "itemId": "item-6",
+                "questions": [{
+                    "id": "q1",
+                    "header": "Choice",
+                    "question": "Pick one",
+                    "options": [
+                        { "label": "Yes", "description": "Continue" },
+                        { "label": "No", "description": "Stop" }
+                    ]
+                }]
+            }),
+            "item/tool/requestUserInput",
+        );
+        assert_eq!(
+            input_with_options.user_input_questions(),
+            vec![UserInputQuestion {
+                id: "q1".into(),
+                header: "Choice".into(),
+                question: "Pick one".into(),
+                options: vec![
+                    UserInputOption {
+                        label: "Yes".into(),
+                        description: "Continue".into(),
+                    },
+                    UserInputOption {
+                        label: "No".into(),
+                        description: "Stop".into(),
+                    },
+                ],
+                allow_multiple: false,
+            }]
+        );
+        let selected = HashMap::from([(String::from("q1"), vec![String::from("Yes")])]);
+        assert_eq!(
+            input_with_options.response_with_answers(&selected),
+            json!({ "answers": { "q1": { "answers": ["Yes"] } } })
+        );
+        let invalid = HashMap::from([(String::from("q1"), vec![String::from("Maybe")])]);
+        assert_eq!(
+            input_with_options.response_with_answers(&invalid),
+            json!({ "answers": {} })
+        );
 
         let mcp = PendingInteraction::from_event(
             &json!({ "id": 4 }),

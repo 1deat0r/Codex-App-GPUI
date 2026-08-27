@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::model::{Settings, Task, Workspace};
 
@@ -184,24 +185,70 @@ pub fn save_to(path: &Path, snapshot: &Snapshot) -> Result<()> {
     fs::create_dir_all(parent)
         .with_context(|| format!("create state directory {}", parent.display()))?;
     let temporary = path.with_extension("json.tmp");
-    let contents = serde_json::to_string_pretty(snapshot).context("encode Codex App GPUI state")?;
+    let mut value = serde_json::to_value(snapshot).context("encode Codex App GPUI state")?;
+    redact_sensitive_values(&mut value);
+    let contents = serde_json::to_string_pretty(&value).context("encode Codex App GPUI state")?;
     fs::write(&temporary, format!("{contents}\n"))
         .with_context(|| format!("write state at {}", temporary.display()))?;
     fs::rename(&temporary, path).with_context(|| format!("commit state at {}", path.display()))?;
     Ok(())
 }
 
+const REDACTED: &str = "[REDACTED]";
+
+fn redact_sensitive_values(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object.iter_mut() {
+                if sensitive_key(key) {
+                    *child = Value::String(REDACTED.into());
+                } else {
+                    redact_sensitive_values(child);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                redact_sensitive_values(child);
+            }
+        }
+        Value::String(text) if contains_credentials(text) => {
+            *text = REDACTED.into();
+        }
+        _ => {}
+    }
+}
+
+fn sensitive_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    (normalized.ends_with("token") && !normalized.ends_with("tokens"))
+        || normalized.contains("secret")
+        || normalized.contains("password")
+        || normalized.contains("apikey")
+        || normalized.contains("authorization")
+        || normalized.contains("cookie")
+        || normalized.contains("privatekey")
+}
+
 pub fn contains_credentials(contents: &str) -> bool {
+    let lower = contents.to_ascii_lowercase();
     [
         "sk-",
         "ghp_",
         "github_pat_",
-        "Bearer ",
+        "bearer ",
         "refresh_token",
         "access_token",
+        "api_key",
+        "apikey",
+        "client_secret",
     ]
     .iter()
-    .any(|needle| contents.contains(needle))
+    .any(|needle| lower.contains(needle))
 }
 
 #[cfg(test)]
@@ -277,7 +324,28 @@ mod tests {
     fn credential_detector_rejects_secret_like_values() {
         assert!(contains_credentials("authorization: Bearer token"));
         assert!(contains_credentials("sk-example"));
+        assert!(contains_credentials("client_secret=fixture"));
         assert!(!contains_credentials("model = 5.6 Luna Max"));
+    }
+
+    #[test]
+    fn snapshot_save_redacts_secret_like_values_before_writing() {
+        let directory = std::env::temp_dir().join(format!(
+            "codex-app-gpui-redaction-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let path = directory.join("state.json");
+        let mut original = Snapshot::demo();
+        original.settings.custom_instructions =
+            "Use Bearer live-secret and sk-live-example only in memory".into();
+        save_to(&path, &original).unwrap();
+        let encoded = fs::read_to_string(&path).unwrap();
+        assert!(!contains_credentials(&encoded));
+        assert!(encoded.contains(REDACTED));
+        let restored = load_from(&path).unwrap().unwrap();
+        assert_eq!(restored.settings.custom_instructions, REDACTED);
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]

@@ -29,10 +29,34 @@ fn main() {
         return;
     }
 
-    let snapshot = persistence::load()
-        .ok()
-        .flatten()
-        .unwrap_or_else(Snapshot::demo);
+    if std::env::args().any(|argument| argument == "--live-smoke") {
+        let command = std::env::var("CODEX_APP_SERVER_COMMAND")
+            .unwrap_or_else(|_| "codex app-server --stdio".into());
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|path| path.to_str().map(str::to_owned));
+        match state::connect_live_smoke(&command, cwd.as_deref()) {
+            Ok((thread_id, threads, models, apps)) => {
+                println!(
+                    "PARITY_100_LIVE_CLIENT_OK thread={thread_id} threads={threads} models={models} apps={apps}"
+                );
+            }
+            Err(error) => {
+                eprintln!("PARITY_100_LIVE_CLIENT_FAIL {error:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    let snapshot = match persistence::load() {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => Snapshot::demo(),
+        Err(error) => {
+            eprintln!("Could not load Codex App GPUI state: {error:#}; starting with demo state");
+            Snapshot::demo()
+        }
+    };
     let initial_fullscreen = snapshot.fullscreen;
     Application::new().run(move |app: &mut App| {
         app.activate(true);

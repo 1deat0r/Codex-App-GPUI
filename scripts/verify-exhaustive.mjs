@@ -14,6 +14,7 @@ const checks = [
   ["protocol fixture", ["scripts/verify-protocol.mjs"]],
   ["persistence fixture", ["scripts/verify-persistence.mjs"]],
   ["native fixture", ["scripts/verify-native-fixture.mjs"]],
+  ["native window", ["scripts/verify-native-window.mjs"]],
   ["native surface inventory", ["scripts/verify-native-surface.mjs"]],
   ["live app-server", ["scripts/verify-live-app-server.mjs"]],
   ["safety scan", ["scripts/check-safety.mjs"]],
