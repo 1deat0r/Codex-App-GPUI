@@ -3199,48 +3199,7 @@ fn settings_page_body(
                     },
                 ))),
             )),
-        SettingsPage::Mcp => div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(setting_row(
-                "MCP servers",
-                "Server status reported by the app-server",
-                if state.catalog.mcp_servers.is_empty() {
-                    "None reported".into()
-                } else {
-                    state.catalog.mcp_servers.join(", ")
-                },
-                None,
-            ))
-            .child(setting_row(
-                "Capabilities",
-                "MCP access stays within app-server approvals",
-                if state.connection == crate::state::ConnectionState::Live {
-                    "Live"
-                } else {
-                    "Demo"
-                }
-                .into(),
-                None,
-            ))
-            .child(setting_row(
-                "Add server",
-                "Configure an MCP server",
-                "＋".into(),
-                None,
-            ))
-            .child(setting_row(
-                "Refresh servers",
-                "Reload MCP status from Codex",
-                "↻".into(),
-                Some(Box::new(window.listener_for(
-                    &cx.entity(),
-                    |this, _event, _window, cx| {
-                        this.reload_mcp_servers(cx);
-                    },
-                ))),
-            )),
+        SettingsPage::Mcp => mcp_settings_page(state, window, cx),
         SettingsPage::Skills => div()
             .flex()
             .flex_col()
@@ -4201,6 +4160,54 @@ fn capability_page(title: &'static str, description: &'static str, connected: bo
         ))
 }
 
+fn mcp_settings_page(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(setting_row(
+            "MCP servers",
+            "Server status reported by the app-server",
+            if state.catalog.mcp_servers.is_empty() {
+                "None reported".into()
+            } else {
+                state.catalog.mcp_servers.join(", ")
+            },
+            None,
+        ))
+        .child(setting_row(
+            "Capabilities",
+            "MCP access stays within app-server approvals",
+            if state.connection == crate::state::ConnectionState::Live {
+                "Live"
+            } else {
+                "Demo"
+            }
+            .into(),
+            None,
+        ))
+        .child(instruction_setting(
+            "mcp-server",
+            "Add server",
+            "Enter a JSON object with name plus command or URL, then save",
+            "",
+            state,
+            window,
+            cx,
+        ))
+        .child(setting_row(
+            "Refresh servers",
+            "Reload MCP status from Codex",
+            "↻".into(),
+            Some(Box::new(window.listener_for(
+                &cx.entity(),
+                |this, _event, _window, cx| {
+                    this.reload_mcp_servers(cx);
+                },
+            ))),
+        ))
+}
+
 fn instruction_setting(
     field: &'static str,
     title: &'static str,
@@ -4291,7 +4298,11 @@ fn instruction_setting(
         Some(Box::new(window.listener_for(
             &cx.entity(),
             move |this, _event, window, cx| {
-                this.begin_instruction_edit(field, window, cx);
+                if field == "mcp-server" {
+                    this.begin_mcp_server_edit(window, cx);
+                } else {
+                    this.begin_instruction_edit(field, window, cx);
+                }
             },
         ))),
     )

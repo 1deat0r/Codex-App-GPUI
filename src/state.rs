@@ -3172,6 +3172,17 @@ impl AppState {
         cx.notify();
     }
 
+    pub fn begin_mcp_server_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_draft =
+            "{\n  \"name\": \"my-server\",\n  \"command\": \"your-command\",\n  \"args\": []\n}"
+                .into();
+        self.settings_caret = self.settings_draft.chars().count();
+        self.settings_selection_anchor = None;
+        self.settings_editor = Some("mcp-server");
+        window.focus(&self.settings_focus);
+        cx.notify();
+    }
+
     pub fn cancel_instruction_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings_editor = None;
         self.settings_draft.clear();
@@ -3186,6 +3197,14 @@ impl AppState {
             return;
         };
         let value = self.settings_draft.trim().to_owned();
+        if field == "mcp-server" {
+            self.settings_draft.clear();
+            self.settings_caret = 0;
+            self.settings_selection_anchor = None;
+            window.focus(&self.root_focus);
+            self.add_mcp_server_from_json(&value, cx);
+            return;
+        }
         match field {
             "custom-instructions" => self.settings.custom_instructions = value,
             "commit-instructions" => self.settings.commit_instructions = value,
@@ -3208,6 +3227,87 @@ impl AppState {
             _ => "Instructions saved",
         };
         self.notify_success(message, cx);
+    }
+
+    fn add_mcp_server_from_json(&mut self, source: &str, cx: &mut Context<Self>) {
+        let mut config: Value = match serde_json::from_str(source) {
+            Ok(config) => config,
+            Err(error) => {
+                self.fail(&format!("MCP server JSON is invalid: {error}"), cx);
+                return;
+            }
+        };
+        let Some(object) = config.as_object_mut() else {
+            self.fail("MCP server configuration must be a JSON object", cx);
+            return;
+        };
+        let Some(name) = object
+            .remove("name")
+            .and_then(|value| value.as_str().map(str::to_owned))
+        else {
+            self.fail("MCP server configuration needs a name", cx);
+            return;
+        };
+        if !valid_mcp_server_name(&name) {
+            self.fail(
+                "MCP server names may use letters, numbers, hyphens, and underscores",
+                cx,
+            );
+            return;
+        }
+        let has_command = object
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|command| !command.trim().is_empty());
+        let has_url = object
+            .get("url")
+            .and_then(Value::as_str)
+            .is_some_and(|url| !url.trim().is_empty());
+        if !has_command && !has_url {
+            self.fail("MCP server configuration needs a command or URL", cx);
+            return;
+        }
+        if self
+            .catalog
+            .mcp_servers
+            .iter()
+            .all(|server| server != &name)
+        {
+            self.catalog.mcp_servers.push(name.clone());
+        }
+        let Some(client) = self
+            .live_client
+            .clone()
+            .filter(|_| self.connection == ConnectionState::Live)
+        else {
+            self.persist(cx);
+            self.notify_success("MCP server added to the local catalog", cx);
+            return;
+        };
+        let key_path = format!("mcp_servers.{name}");
+        let async_cx = cx.to_async();
+        cx.spawn(
+            move |this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+                let result = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        smol::unblock(move || {
+                            client.config_value_write(&key_path, "upsert", config)?;
+                            client.config_mcp_server_reload()
+                        })
+                        .await
+                    })
+                    .await;
+                let _ = this.update(&mut async_cx.clone(), |this, cx| match result {
+                    Ok(_) => {
+                        this.refresh_catalog(cx);
+                        this.notify_success("MCP server added", cx);
+                    }
+                    Err(error) => this.fail(&format!("MCP server add failed: {error}"), cx),
+                });
+            },
+        )
+        .detach();
     }
 
     pub fn cancel_rename(&mut self, cx: &mut Context<Self>) {
@@ -4476,6 +4576,13 @@ fn config_summary_from_value(value: &Value) -> Vec<String> {
 fn dedupe_strings(values: &mut Vec<String>) {
     let mut seen = HashSet::new();
     values.retain(|value| seen.insert(value.clone()));
+}
+
+fn valid_mcp_server_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
 }
 
 #[derive(Debug, Clone, Copy)]

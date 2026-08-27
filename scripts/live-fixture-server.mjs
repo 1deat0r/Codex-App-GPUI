@@ -283,6 +283,12 @@ function handle(message) {
       case "skills/list":
         response(id, { data: [{ cwd, skills: [{ name: "fixture-skill" }] }] });
         break;
+      case "skills/extraRoots/set":
+        response(id, { extraRoots: params.extraRoots ?? [] });
+        break;
+      case "hooks/list":
+        response(id, { data: [{ name: "fixture-hook", event: "turn.completed" }] });
+        break;
       case "mcpServerStatus/list":
         response(id, { data: [{ name: "fixture-mcp", status: "connected" }] });
         break;
@@ -291,6 +297,19 @@ function handle(message) {
         break;
       case "config/read":
         response(id, { config: { approval_policy: "on-request", sandbox_mode: "workspace-write" }, origins: {} });
+        break;
+      case "config/value/write":
+        response(id, { status: "ok", keyPath: params.keyPath, value: params.value });
+        break;
+      case "config/mcpServer/reload":
+        response(id, { status: "ok" });
+        break;
+      case "account/login/start":
+        response(id, { loginId: "fixture-login", authUrl: "https://example.invalid/device" });
+        break;
+      case "account/login/cancel":
+      case "account/logout":
+        response(id, {});
         break;
       case "thread/start": {
         const thread = createThread();

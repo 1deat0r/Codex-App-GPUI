@@ -76,10 +76,32 @@ try {
     send("mcpServerStatus/list"),
     send("account/read"),
     send("config/read", { includeLayers: false }),
+    send("hooks/list", { cwds: [process.cwd()] }),
   ]);
   if (!Array.isArray(catalog[0].data) || !Array.isArray(catalog[1].data)) {
     throw new Error("catalog methods did not return data");
   }
+  if (!Array.isArray(catalog[10].data) || catalog[10].data[0]?.name !== "fixture-hook") {
+    throw new Error("hooks/list did not return the fixture hook");
+  }
+  const appDetails = await send("app/read", { appIds: ["fixture-app"], includeTools: true });
+  if (appDetails.apps?.[0]?.tools?.[0]?.name !== "fixture_tool") {
+    throw new Error("app/read did not return the fixture tool inventory");
+  }
+  const roots = await send("skills/extraRoots/set", { extraRoots: ["/tmp/fixture-skills"] });
+  if (roots.extraRoots?.[0] !== "/tmp/fixture-skills") {
+    throw new Error("skills/extraRoots/set did not preserve the root");
+  }
+  const configWrite = await send("config/value/write", {
+    keyPath: "instructions",
+    mergeStrategy: "replace",
+    value: "fixture guidance",
+  });
+  if (configWrite.status !== "ok") throw new Error("config/value/write did not acknowledge the edit");
+  const login = await send("account/login/start", { type: "chatgptDeviceCode" });
+  if (login.loginId !== "fixture-login") throw new Error("account/login/start did not return a login id");
+  await send("account/login/cancel", { loginId: login.loginId });
+  await send("account/logout");
   const started = await send("thread/start", {});
   const threadId = started.thread.id;
   await send("thread/name/set", { threadId, name: "Fixture parity task" });
