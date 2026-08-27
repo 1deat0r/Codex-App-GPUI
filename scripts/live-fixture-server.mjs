@@ -35,6 +35,7 @@ function createThread(name = "Untitled task") {
     status: "idle",
     model: "5.6 Luna Max",
     updatedAt: "Fixture",
+    archived: false,
     turns: [],
   };
   threads.set(id, thread);
@@ -105,7 +106,53 @@ function handle(message) {
         });
         break;
       case "thread/list":
-        response(id, { data: [...threads.values()] });
+        response(id, {
+          data: [...threads.values()].filter((thread) =>
+            params.archived === true ? thread.archived : !thread.archived,
+          ),
+        });
+        break;
+      case "model/list":
+        response(id, {
+          data: [
+            {
+              id: "fixture-model",
+              model: "fixture-model",
+              displayName: "Fixture Model",
+              supportedReasoningEfforts: [
+                { reasoningEffort: "low", description: "Fast" },
+                { reasoningEffort: "high", description: "Deep" },
+              ],
+            },
+          ],
+        });
+        break;
+      case "permissionProfile/list":
+        response(id, { data: [{ id: ":workspace", name: "Workspace" }] });
+        break;
+      case "collaborationMode/list":
+        response(id, { data: [{ mode: "default", name: "Default" }, { mode: "plan", name: "Plan" }] });
+        break;
+      case "app/list":
+        response(id, { data: [{ id: "fixture-app", name: "Fixture App" }] });
+        break;
+      case "app/installed":
+        response(id, { apps: [{ id: "fixture-app", name: "Fixture App" }] });
+        break;
+      case "plugin/list":
+        response(id, { marketplaces: [{ name: "Fixture Marketplace", plugins: [{ id: "fixture-plugin", name: "Fixture Plugin" }] }] });
+        break;
+      case "skills/list":
+        response(id, { data: [{ cwd, skills: [{ name: "fixture-skill" }] }] });
+        break;
+      case "mcpServerStatus/list":
+        response(id, { data: [{ name: "fixture-mcp", status: "connected" }] });
+        break;
+      case "account/read":
+        response(id, { account: { name: "Fixture account", type: "fixture" } });
+        break;
+      case "config/read":
+        response(id, { config: { approval_policy: "on-request", sandbox_mode: "workspace-write" }, origins: {} });
         break;
       case "thread/start": {
         const thread = createThread();
@@ -143,11 +190,15 @@ function handle(message) {
         break;
       }
       case "thread/archive": {
+        const thread = threads.get(params.threadId);
+        if (thread) thread.archived = true;
         response(id, {});
         notify("thread/archived", { threadId: params.threadId });
         break;
       }
       case "thread/unarchive": {
+        const thread = threads.get(params.threadId);
+        if (thread) thread.archived = false;
         response(id, {});
         notify("thread/unarchived", { threadId: params.threadId });
         break;
@@ -204,6 +255,26 @@ function handle(message) {
       }
       case "turn/steer":
         response(id, {});
+        break;
+      case "thread/realtime/start":
+        response(id, { realtimeSessionId: "fixture-realtime" });
+        notify("thread/realtime/started", {
+          threadId: params.threadId,
+          realtimeSessionId: "fixture-realtime",
+          version: "fixture",
+        });
+        break;
+      case "thread/realtime/appendText":
+        response(id, {});
+        notify("thread/realtime/transcript/delta", {
+          threadId: params.threadId,
+          role: "user",
+          delta: params.text ?? "",
+        });
+        break;
+      case "thread/realtime/stop":
+        response(id, {});
+        notify("thread/realtime/closed", { threadId: params.threadId, reason: "fixture stop" });
         break;
       case "turn/interrupt": {
         response(id, {});

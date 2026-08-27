@@ -902,6 +902,61 @@ mod tests {
     }
 
     #[test]
+    fn thread_list_follows_next_cursor_without_losing_rows() {
+        let input = b"{\"id\":1,\"result\":{\"data\":[{\"id\":\"t-1\"}],\"nextCursor\":\"page-2\"}}\n{\"id\":2,\"result\":{\"data\":[{\"id\":\"t-2\"}]}}\n";
+        let recorded = RecordingWriter::default();
+        let bytes = recorded.0.clone();
+        let client = AppServerClient::from_parts(Cursor::new(input), recorded);
+        let threads = client.thread_list(None).unwrap();
+        assert_eq!(
+            threads
+                .iter()
+                .map(|thread| thread.id.as_str())
+                .collect::<Vec<_>>(),
+            ["t-1", "t-2"]
+        );
+        let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("page-2"));
+    }
+
+    #[test]
+    fn full_turn_and_realtime_methods_emit_official_parameter_shapes() {
+        let input = b"{\"id\":1,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}\n{\"id\":2,\"result\":{}}\n{\"id\":3,\"result\":{}}\n{\"id\":4,\"result\":{}}\n{\"id\":5,\"result\":{}}\n";
+        let recorded = RecordingWriter::default();
+        let bytes = recorded.0.clone();
+        let client = AppServerClient::from_parts(Cursor::new(input), recorded);
+        client
+            .turn_start_with_full_options_and_attachments(
+                "thread-1",
+                "hello",
+                Some("gpt-test"),
+                Some("high"),
+                Some("/tmp"),
+                Some("on-request"),
+                Some("workspaceWrite"),
+                Some("openai"),
+                Some("friendly"),
+                &[],
+            )
+            .unwrap();
+        client.turn_steer("thread-1", "turn-1", "steer").unwrap();
+        client.realtime_start("thread-1", "text").unwrap();
+        client.realtime_append_text("thread-1", "voice").unwrap();
+        client.realtime_stop("thread-1").unwrap();
+        let requests = String::from_utf8(bytes.lock().unwrap().clone())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(requests[0]["params"]["sandboxPolicy"], "workspaceWrite");
+        assert_eq!(requests[0]["params"]["modelProvider"], "openai");
+        assert_eq!(requests[1]["params"]["expectedTurnId"], "turn-1");
+        assert_eq!(requests[2]["method"], "thread/realtime/start");
+        assert_eq!(requests[3]["params"]["text"], "voice");
+        assert_eq!(requests[4]["method"], "thread/realtime/stop");
+    }
+
+    #[test]
     fn launcher_noise_before_jsonl_does_not_break_initialize() {
         let input = b"mise launcher notice\n{\"id\":1,\"result\":{\"ok\":true}}\n";
         let client = AppServerClient::from_parts(Cursor::new(input), RecordingWriter::default());

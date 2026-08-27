@@ -1213,18 +1213,7 @@ impl AppState {
     }
 
     pub fn continue_turn(&mut self, cx: &mut Context<Self>) {
-        if self.streaming {
-            return;
-        }
-        if let Some(task) = self.current_task_mut() {
-            task.status = "running".into();
-            task.entries.push(Entry::System {
-                id: format!("continue-{}", task.entries.len()),
-                text: "Continuing the turn".into(),
-            });
-        }
-        self.streaming = true;
-        self.notify_success("Continuing", cx);
+        self.retry_current(cx);
     }
 
     pub fn cycle_model(&mut self, cx: &mut Context<Self>) {
@@ -3276,6 +3265,78 @@ mod tests {
                 status: "complete".into()
             }]),
             (1, 1)
+        );
+    }
+
+    #[test]
+    fn server_catalog_extracts_models_reasoning_and_nested_capabilities() {
+        let value = json!({
+            "data": [
+                {
+                    "id": "gpt-test",
+                    "displayName": "GPT Test",
+                    "supportedReasoningEfforts": [
+                        { "reasoningEffort": "low", "description": "fast" },
+                        { "reasoningEffort": "high", "description": "deep" }
+                    ]
+                }
+            ]
+        });
+        let models = model_options_from_value(&value);
+        assert_eq!(models[0].id, "gpt-test");
+        assert_eq!(models[0].label, "GPT Test");
+        assert_eq!(models[0].reasoning, ["low", "high"]);
+        let names = nested_named_values_from_data(
+            &json!({ "marketplaces": [{ "name": "main", "plugins": [{ "id": "p1", "name": "Plugin" }] }] }),
+            &["marketplaces", "plugins"],
+            &["name", "id"],
+        );
+        assert!(names.contains(&"main".into()));
+        assert!(names.contains(&"p1".into()));
+        assert!(names.contains(&"Plugin".into()));
+    }
+
+    #[test]
+    fn server_items_cover_tool_diff_and_realtime_shapes() {
+        let command = entry_from_server_item(&json!({
+            "id": "command-1",
+            "type": "commandExecution",
+            "command": "cargo test",
+            "cwd": "/tmp",
+            "status": "completed",
+            "aggregatedOutput": "ok"
+        }))
+        .unwrap();
+        assert!(matches!(command, Entry::Tool { status, .. } if status == "complete"));
+        let diff = diff_entry_from_value("diff-1", &json!("+added\n-removed")).unwrap();
+        assert!(matches!(
+            diff,
+            Entry::Diff {
+                additions: 1,
+                deletions: 1,
+                ..
+            }
+        ));
+        let collab = entry_from_server_item(&json!({
+            "id": "agent-1",
+            "type": "collabAgentToolCall",
+            "tool": "spawnAgent",
+            "status": "completed",
+            "receiverThreadIds": ["child-1"],
+            "senderThreadId": "parent",
+            "agentsStates": {}
+        }))
+        .unwrap();
+        assert!(matches!(collab, Entry::Tool { name, .. } if name == "collabAgentToolCall"));
+    }
+
+    #[test]
+    fn sandbox_policy_matches_official_wire_names() {
+        assert_eq!(sandbox_policy_wire("workspace-write"), "workspaceWrite");
+        assert_eq!(sandbox_policy_wire("read-only"), "readOnly");
+        assert_eq!(
+            sandbox_policy_wire("danger-full-access"),
+            "dangerFullAccess"
         );
     }
 }

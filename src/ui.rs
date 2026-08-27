@@ -1080,6 +1080,13 @@ fn header_menu(state: &AppState, window: &mut Window, cx: &mut Context<AppState>
                 }),
             ),
             menu_action(
+                "menu-compact",
+                "Compact context",
+                window.listener_for(&cx.entity(), |this, _event, _window, cx| {
+                    this.compact_current(cx);
+                }),
+            ),
+            menu_action(
                 "menu-retry",
                 "Retry last turn",
                 window.listener_for(&cx.entity(), |this, _event, _window, cx| {

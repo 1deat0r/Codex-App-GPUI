@@ -59,6 +59,21 @@ try {
   server.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
   const listed = await send("thread/list", { limit: 100 });
   if (!Array.isArray(listed.data)) throw new Error("thread/list did not return data");
+  const catalog = await Promise.all([
+    send("model/list", { limit: 100 }),
+    send("permissionProfile/list", { cwd: process.cwd() }),
+    send("collaborationMode/list"),
+    send("app/list", { limit: 100 }),
+    send("app/installed"),
+    send("plugin/list"),
+    send("skills/list", { cwds: [process.cwd()] }),
+    send("mcpServerStatus/list"),
+    send("account/read"),
+    send("config/read", { includeLayers: false }),
+  ]);
+  if (!Array.isArray(catalog[0].data) || !Array.isArray(catalog[1].data)) {
+    throw new Error("catalog methods did not return data");
+  }
   const started = await send("thread/start", {});
   const threadId = started.thread.id;
   await send("thread/name/set", { threadId, name: "Fixture parity task" });
@@ -68,12 +83,22 @@ try {
   await send("turn/start", { threadId, input: [{ type: "text", text: "acceptance" }] });
   await waitFor(() => requests.some((request) => request.method === "item/commandExecution/requestApproval"), "approval request");
   await waitFor(() => events.some((event) => event.method === "turn/completed"), "completed turn");
+  await send("turn/steer", {
+    threadId,
+    expectedTurnId: "fixture-turn-1",
+    input: [{ type: "text", text: "steer" }],
+  });
   await send("turn/start", { threadId, input: [{ type: "text", text: "interrupt" }] });
   await waitFor(() => requests.filter((request) => request.method === "item/commandExecution/requestApproval").length >= 2, "second approval request");
   await send("turn/interrupt", { threadId, turnId: "fixture-turn-2" });
   await waitFor(() => events.some((event) => event.method === "turn/completed" && event.params.turn.status === "interrupted"), "interrupted turn");
   await send("thread/archive", { threadId });
+  const archived = await send("thread/list", { limit: 100, archived: true });
+  if (!archived.data.some((thread) => thread.id === threadId)) throw new Error("archived thread missing");
   await send("thread/unarchive", { threadId });
+  await send("thread/realtime/start", { threadId, outputModality: "text" });
+  await send("thread/realtime/appendText", { threadId, text: "voice fixture" });
+  await send("thread/realtime/stop", { threadId });
   await send("review/start", { threadId, target: { type: "uncommittedChanges" }, delivery: "inline" });
   await waitFor(() => events.some((event) => event.method === "item/completed" && event.params.item.type === "fileChange"), "review file change");
   await send("thread/compact/start", { threadId });
